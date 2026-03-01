@@ -1,0 +1,472 @@
+---
+title: Verifier training
+description: Train encoder models to score answer correctness for math and QA tasks
+---
+
+Verifier training is the fourth and final stage of the Modern LLM pipeline. It trains a separate encoder model to predict whether a solution to a math or reasoning problem is correct, enabling verification-guided inference and best-of-N sampling.
+
+## Overview
+
+The verifier is a small transformer encoder that learns to score the correctness of (question, answer) pairs. Unlike the language model stages (pretrain/SFT/DPO), the verifier is:
+- **Trained independently** - Does not depend on other pipeline stages
+- **Much smaller** - Typically 4 layers, 512 hidden dim (~20M params)
+- **Classification task** - Binary prediction: correct (1) or incorrect (0)
+- **Fast inference** - Can score multiple candidate answers quickly
+
+### Use cases
+
+**Best-of-N sampling**
+Generate N candidate answers, score each with the verifier, return the highest-scoring one. This significantly improves accuracy on math and reasoning tasks.
+
+**Verification during search**
+Use the verifier to guide beam search or tree search (e.g., in solution verification or code generation).
+
+**Data filtering**
+Score synthetic training data to filter out incorrect examples before fine-tuning.
+
+**Process reward modeling**
+Extend to score partial solutions for step-by-step verification (not yet implemented).
+
+## Dataset
+
+The verifier is trained on **GSM8K** (Cobbe et al., 2021), a dataset of grade school math word problems:
+
+- **Training set**: 7,473 problems
+- **Test set**: 1,319 problems
+- **Format**: Question + step-by-step solution + final numeric answer
+
+### Synthetic negatives
+
+Since GSM8K only provides correct solutions, we generate negative examples (wrong answers) using two strategies:
+
+1. **Answer substitution**: Use the answer from a different problem
+2. **Perturbation**: Modify the correct answer by ±1, ±10, ×0.5, ×2, etc.
+
+This creates a balanced dataset with 50% positive and 50% negative examples.
+
+<Note>
+The synthetic negatives are generated on-the-fly during dataset loading with controllable negative ratio (default: 1.0 = one negative per positive).
+</Note>
+
+## Usage
+
+### Using the pipeline runner (recommended)
+
+<CodeGroup>
+```bash Train verifier
+python scripts/run_pipeline.py --config local --stage verifier
+```
+
+```bash Full pipeline (includes verifier)
+python scripts/run_pipeline.py --config local --stage all
+```
+
+```bash Custom steps
+python scripts/run_pipeline.py --config local --stage verifier \
+    --max-steps 2000
+```
+
+```bash Quick test
+python scripts/run_pipeline.py --config local-smoke --stage verifier
+```
+</CodeGroup>
+
+<Note>
+The verifier trains **independently** from pretrain/SFT/DPO. You can run it anytime without waiting for other stages.
+</Note>
+
+### Direct script usage
+
+```bash
+python scripts/train_verifier.py --config local
+```
+
+With custom hyperparameters:
+
+```bash
+python scripts/train_verifier.py \
+    --max-steps 3000 \
+    --lr 1e-4 \
+    --batch-size 32 \
+    --d-model 512 \
+    --num-layers 4
+```
+
+## Configuration
+
+### Config presets
+
+<CodeGroup>
+```python local-smoke
+# Quick test (~1 minute)
+verifier_max_steps: 50
+verifier_lr: 1e-4
+verifier_batch_size: 32
+verifier_micro_batch_size: 4
+# Model size
+d_model: 256
+num_layers: 4
+n_heads: 8
+max_seq_len: 256
+```
+
+```python local
+# RTX 3060, 1 hour
+verifier_max_steps: 3000
+verifier_lr: 1e-4
+verifier_batch_size: 32
+verifier_micro_batch_size: 4
+# Model size
+d_model: 512
+num_layers: 4
+n_heads: 8
+max_seq_len: 512
+```
+
+```python gpu
+# A100/H100, 2 hours
+verifier_max_steps: 3000
+verifier_lr: 1e-4
+verifier_batch_size: 32
+verifier_micro_batch_size: 4
+# Model size
+d_model: 512
+num_layers: 4
+n_heads: 8
+max_seq_len: 512
+```
+</CodeGroup>
+
+<Note>
+The verifier model is intentionally kept small (4 layers, 512 dim) for fast inference. Even this small model achieves 70-80% accuracy on GSM8K verification.
+</Note>
+
+### Model architecture
+
+The verifier uses a standard transformer encoder:
+
+```python
+class VerifierModel(nn.Module):
+    def __init__(self, config: VerifierConfig):
+        # Token embeddings
+        self.embeddings = nn.Embedding(vocab_size, d_model)
+        self.position_embeddings = nn.Embedding(max_position_embeddings, d_model)
+        
+        # Transformer encoder layers
+        self.encoder = TransformerEncoder(
+            d_model=config.d_model,
+            num_layers=config.num_layers,
+            n_heads=config.n_heads,
+        )
+        
+        # Classification head
+        self.classifier = nn.Linear(d_model, 2)  # [incorrect, correct]
+```
+
+Key differences from decoder LM:
+- **Bidirectional attention** (no causal masking)
+- **CLS token pooling** for classification
+- **Small size** for efficiency (~20M params vs 100M+ for LM)
+
+### Hyperparameter tuning
+
+**Learning rate** (`verifier_lr`)
+- Default: `1e-4` (higher than LM training)
+- Verifier trains from scratch, so can use larger LR
+- Range: `5e-5` to `2e-4`
+
+**Training steps** (`verifier_max_steps`)
+- Default: `3000` steps
+- Usually converges in 2000-3000 steps
+- Monitor accuracy - should reach 70-80%
+
+**Model size**
+- Default: d=512, L=4 (~20M params)
+- Larger models (d=768, L=6) give ~2-3% better accuracy
+- Smaller models (d=256, L=2) are faster but less accurate
+
+**Negative ratio** (`negative_ratio`)
+- Default: `1.0` (one negative per positive)
+- Higher ratios (2.0, 3.0) create harder negatives
+- Lower ratios (0.5) focus on high-confidence examples
+
+## Training details
+
+### Optimization
+
+Verifier training uses:
+- **Optimizer**: AdamW with β₁=0.9, β₂=0.99
+- **Learning rate schedule**: Cosine annealing from `verifier_lr` to 0
+- **Gradient accumulation**: Automatic (batch_size / micro_batch_size)
+- **Mixed precision**: BF16 on supported GPUs
+- **Weight decay**: 0.01
+
+### Loss function
+
+Standard binary cross-entropy:
+
+```python
+loss = F.cross_entropy(
+    logits,          # (batch_size, 2)
+    labels,          # (batch_size,) ∈ {0, 1}
+    reduction='mean'
+)
+```
+
+No class weighting needed since positives and negatives are balanced.
+
+### Data format
+
+Examples are formatted as:
+
+```
+Question: A bakery sells 5 loaves of bread for $3 each. How much do they make?
+
+Answer: 15
+```
+
+The verifier predicts:
+- **1 (correct)** if the answer matches the gold answer
+- **0 (incorrect)** if the answer is wrong
+
+### Metrics
+
+Key metrics logged during training:
+
+**Accuracy** - Primary metric
+- % of examples correctly classified
+- Target: 70-80% on train, 65-75% on test
+- Random baseline: 50%
+
+**Loss** - Binary cross-entropy
+- Should decrease from ~0.7 to ~0.3-0.4
+- Lower loss doesn't always mean better accuracy
+
+## Checkpoints
+
+Verifier saves checkpoints at regular intervals:
+
+- **Regular checkpoints**: Every `save_every` steps (default: 2000)
+  - Format: `<run_name>-verifier_step{N}.pt`
+  
+- **Final checkpoint**: At end of training
+  - Format: `<run_name>-verifier_final.pt`
+
+Checkpoint structure:
+
+```python
+checkpoint = {
+    'model_state': OrderedDict(...),      # Verifier encoder weights
+    'optimizer_state': {...},             # Optimizer state
+    'config': {...},                      # VerifierConfig
+    'step': 3000,                         # Training step
+    'run_name': 'local-full-verifier',
+}
+```
+
+## Monitoring
+
+Verifier training progress:
+
+```
+Verifier: 20.3M parameters
+Loading verifier dataset: gsm8k
+Training examples: 14946 (7473 positive, 7473 negative)
+Eval examples: 2638 (1319 positive, 1319 negative)
+Starting verifier training for 3000 steps
+
+Verifier Training: 100%|████████| 3000/3000 [0:58:30<00:00, loss=0.3456, acc=73.45%]
+step=500 loss=0.5234 accuracy=68.23% lr=9.511e-05
+step=1000 loss=0.4123 accuracy=71.45% lr=8.090e-05
+step=1500 loss=0.3678 accuracy=73.12% lr=6.180e-05
+step=2000 loss=0.3456 accuracy=73.89% lr=4.090e-05
+step=2500 loss=0.3312 accuracy=74.23% lr=2.045e-05
+step=3000 loss=0.3245 accuracy=74.56% lr=1.545e-06
+
+eval step=3000 accuracy=72.34%
+Verifier training complete. Final checkpoint: experiments/runs/local-full/verifier_final.pt
+```
+
+### Quality indicators
+
+**Good verifier training:**
+- Train accuracy reaches 70-80%
+- Eval accuracy is within 2-3% of train
+- Loss decreases smoothly
+
+**Signs of overfitting:**
+- Train accuracy > 85% but eval accuracy < 70%
+- Large train/eval accuracy gap
+- Solution: Reduce steps, increase weight decay, or add regularization
+
+**Signs of underfitting:**
+- Accuracy plateaus below 65%
+- Loss stays high (>0.5)
+- Solution: Train longer, increase model size, or check data quality
+
+## Implementation details
+
+Verifier implementation is located at:
+- `src/modern_llm/training/train_verifier.py` - Training loop
+- `src/modern_llm/models/verifier.py` - Model architecture
+- `scripts/train_verifier.py` - CLI wrapper
+- `scripts/run_pipeline.py:run_verifier()` - Pipeline integration
+
+Key functions:
+
+**run_verifier_training(train_config, verifier_config, dataset_config, tokenizer_name)**
+
+`src/modern_llm/training/train_verifier.py:349-425`
+
+Main verifier entrypoint:
+1. Initialize verifier model from scratch
+2. Load GSM8K with synthetic negatives
+3. Setup optimizer and trainer
+4. Run training with eval
+5. Save final checkpoint
+
+**VerifierDataset._generate_wrong_answer(correct, all_answers, idx)**
+
+`src/modern_llm/training/train_verifier.py:117-146`
+
+Generates synthetic negative examples:
+1. Choose strategy (substitution or perturbation)
+2. Apply transformation to correct answer
+3. Return plausible but wrong answer
+
+**VerifierModel.forward(input_ids, attention_mask, labels)**
+
+`src/modern_llm/models/verifier.py`
+
+Forward pass:
+1. Embed tokens and add positional encodings
+2. Pass through encoder layers
+3. Pool to get sequence representation
+4. Classify as correct/incorrect
+5. Compute loss if labels provided
+
+## Using the verifier
+
+Once trained, use the verifier for inference:
+
+### Best-of-N sampling
+
+Generate multiple answers and return the best:
+
+```python
+from modern_llm.models import VerifierModel
+from modern_llm.utils.checkpointing import load_checkpoint
+
+# Load verifier
+ckpt = load_checkpoint("experiments/runs/local-full/verifier_final.pt")
+verifier = VerifierModel.from_checkpoint(ckpt)
+
+# Generate N candidates
+question = "What is 15 × 23?"
+candidates = [
+    language_model.generate(question) for _ in range(8)
+]
+
+# Score each candidate
+scores = [
+    verifier.score(question, answer)
+    for answer in candidates
+]
+
+# Return best
+best_answer = candidates[np.argmax(scores)]
+```
+
+### Verification API
+
+```python
+# Score a single answer
+score = verifier.score(
+    question="What is 2 + 2?",
+    answer="4"
+)  # Returns probability ∈ [0, 1]
+
+# Binary decision
+is_correct = verifier.verify(
+    question="What is 2 + 2?",
+    answer="5"
+)  # Returns True/False
+```
+
+## Performance tips
+
+<AccordionGroup>
+  <Accordion title="Improve accuracy">
+    - Increase model size (d=768, L=6)
+    - Train longer (5000 steps)
+    - Use hard negatives (negative_ratio=2.0)
+    - Add more data (other math datasets like MATH, MathQA)
+  </Accordion>
+
+  <Accordion title="Speed up inference">
+    - Use smaller model (d=256, L=2)
+    - Quantize to int8 (not yet supported)
+    - Batch multiple candidates together
+    - Cache verifier on GPU for repeated use
+  </Accordion>
+
+  <Accordion title="Reduce memory usage">
+    - Lower micro_batch_size
+    - Use gradient checkpointing
+    - Reduce max_seq_len to 256
+    - Use smaller model
+  </Accordion>
+
+  <Accordion title="Generalize beyond GSM8K">
+    - Train on multiple datasets (GSM8K + MATH + MathQA)
+    - Use harder problems (AQuA, MATH Level 5)
+    - Add code execution problems (HumanEval, MBPP)
+    - Fine-tune on your specific domain
+  </Accordion>
+</AccordionGroup>
+
+## Evaluation
+
+Evaluate the verifier on held-out test set:
+
+```bash
+python scripts/evaluate_pipeline.py \
+    --checkpoint experiments/runs/local-full/verifier_final.pt \
+    --stage verifier
+```
+
+This reports:
+- **Accuracy**: % of correct classifications
+- **Precision**: Of examples marked correct, % truly correct
+- **Recall**: Of truly correct examples, % marked correct
+- **F1 score**: Harmonic mean of precision and recall
+
+### Expected results
+
+On GSM8K test set:
+- **Small model** (d=512, L=4): 70-75% accuracy
+- **Medium model** (d=768, L=6): 75-80% accuracy
+- **Large model** (d=1024, L=8): 78-82% accuracy
+
+<Note>
+These numbers are for verifying final numeric answers. Process verification (scoring intermediate steps) is more challenging and typically achieves lower accuracy.
+</Note>
+
+## Next steps
+
+After verifier training completes, you have a complete Modern LLM system:
+
+1. **Pretrained language model** - General language understanding
+2. **SFT model** - Instruction-following capability
+3. **DPO model** - Preference-aligned responses
+4. **Verifier** - Answer correctness scoring
+
+You can now:
+- Deploy the DPO model with best-of-N sampling using the verifier
+- Run comprehensive evaluations on standard benchmarks
+- Iterate with more data and improved hyperparameters
+- Extend the verifier to other domains (code, reasoning, etc.)
+
+<Card title="Pipeline overview" icon="diagram-project" href="/pipeline/overview">
+  Return to the pipeline overview for next steps
+</Card>

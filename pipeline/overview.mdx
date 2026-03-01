@@ -1,0 +1,222 @@
+---
+title: Training pipeline overview
+description: End-to-end pipeline from pretraining to DPO alignment and verifier training
+---
+
+The Modern LLM training pipeline implements a complete training workflow that takes a model from scratch to a fully aligned language model with verification capabilities.
+
+## Pipeline stages
+
+The training pipeline consists of four sequential stages:
+
+<Steps>
+  <Step title="Pretraining">
+    Train the language model from random initialization on large text corpora (WikiText-2, OpenWebText, TinyStories, Wikipedia). The model learns basic language understanding and generation capabilities through next-token prediction.
+  </Step>
+  
+  <Step title="Supervised fine-tuning (SFT)">
+    Fine-tune the pretrained model on instruction-following datasets (Alpaca, Dolly, OpenOrca). The model learns to follow instructions and respond to user queries in a conversational format.
+  </Step>
+  
+  <Step title="Direct preference optimization (DPO)">
+    Further align the SFT model using preference data (Anthropic HH-RLHF). The model learns to prefer chosen responses over rejected ones, improving alignment with human preferences without requiring a reward model.
+  </Step>
+  
+  <Step title="Verifier training">
+    Train a separate encoder model to score answer correctness on math/QA problems (GSM8K). This verifier can be used for verification during inference or as part of a best-of-N sampling strategy.
+  </Step>
+</Steps>
+
+## Quick start
+
+### Run the full pipeline
+
+The simplest way to run the entire pipeline is with the unified runner script:
+
+<CodeGroup>
+```bash Smoke test (5 min)
+python scripts/run_pipeline.py --config local-smoke --stage all
+```
+
+```bash Local GPU (24 hours)
+python scripts/run_pipeline.py --config local --stage all
+```
+
+```bash High-end GPU (48 hours)
+python scripts/run_pipeline.py --config gpu --stage all
+```
+</CodeGroup>
+
+### Run individual stages
+
+You can also run stages individually:
+
+```bash
+# Pretrain only
+python scripts/run_pipeline.py --config local --stage pretrain
+
+# Resume SFT from existing pretrain checkpoint
+python scripts/run_pipeline.py --config local --stage sft \
+    --checkpoint experiments/runs/local-full/pretrain_final.pt
+
+# Run DPO on SFT checkpoint
+python scripts/run_pipeline.py --config local --stage dpo \
+    --checkpoint experiments/runs/local-full/sft_final.pt
+
+# Train verifier (independent of other stages)
+python scripts/run_pipeline.py --config local --stage verifier
+```
+
+## Config presets
+
+The pipeline comes with four built-in configuration presets optimized for different hardware and time constraints:
+
+### local-smoke
+Quick smoke test (~5 minutes) for validation:
+- **Model**: d=256, L=4, H=4 (~10M params)
+- **Steps**: 100 pretrain / 50 SFT / 50 DPO / 50 verifier
+- **Hardware**: Works on CPU or any GPU
+- **Use case**: CI/CD testing, quick validation
+
+### local
+Full training for consumer GPUs (RTX 3060) running ~24 hours:
+- **Model**: d=768, L=12, H=12 (~117M params)
+- **Steps**: 20K pretrain / 5K SFT / 2K DPO / 3K verifier
+- **Hardware**: RTX 3060 or better (12GB VRAM)
+- **Use case**: Research experiments, local development
+
+### gpu-smoke
+Quick GPU test (~10 minutes):
+- **Model**: d=256, L=4, H=4 (~10M params)
+- **Steps**: 100 pretrain / 50 SFT / 50 DPO / 50 verifier
+- **Hardware**: Any modern GPU
+- **Use case**: Testing distributed training, GPU cluster validation
+
+### gpu
+High-quality training for datacenter GPUs (A100/H100) running ~48 hours:
+- **Model**: d=1024, L=12, H=16 (~350M params)
+- **Steps**: 80K pretrain / 10K SFT / 3K DPO / 3K verifier
+- **Datasets**: Wikipedia + OpenWebText + WikiText-103 + TinyStories (100K)
+- **Hardware**: A100/H100 with 40-80GB VRAM
+- **Use case**: Production models, benchmark results
+
+## Configuration
+
+### Override hyperparameters
+
+You can override specific hyperparameters via command-line arguments:
+
+```bash
+# Override training steps for all stages
+python scripts/run_pipeline.py --config local --stage all --max-steps 1000
+
+# Override specific stage steps
+python scripts/run_pipeline.py --config local --stage all \
+    --pretrain-steps 10000 \
+    --sft-steps 2000 \
+    --dpo-steps 500
+
+# Override datasets
+python scripts/run_pipeline.py --config local --stage all \
+    --pretrain-datasets "wikitext-2-raw-v1,roneneldan/TinyStories"
+
+# Custom output directory
+python scripts/run_pipeline.py --config local --stage all \
+    --output-dir /path/to/checkpoints
+```
+
+### Custom config files
+
+For more control, create a custom JSON config file:
+
+```json configs/custom.json
+{
+  "d_model": 768,
+  "n_layers": 12,
+  "n_heads": 12,
+  "max_seq_len": 1024,
+  "pretrain_max_steps": 15000,
+  "pretrain_lr": 3e-4,
+  "sft_max_steps": 3000,
+  "sft_lr": 1e-5,
+  "dpo_max_steps": 1500,
+  "dpo_lr": 5e-6,
+  "dpo_beta": 0.1,
+  "run_name": "my-custom-run"
+}
+```
+
+Then run with your custom config:
+
+```bash
+python scripts/run_pipeline.py --config configs/custom.json --stage all
+```
+
+## Output structure
+
+The pipeline creates the following directory structure:
+
+```
+experiments/runs/<run_name>/
+├── <run_name>-pretrain/
+│   ├── <run_name>-pretrain_final.pt
+│   ├── <run_name>-pretrain_step5000.pt
+│   └── training.log
+├── <run_name>-sft/
+│   ├── <run_name>-sft_final.pt
+│   └── training.log
+├── <run_name>-dpo/
+│   ├── <run_name>-dpo_final.pt
+│   └── training.log
+├── <run_name>-verifier/
+│   ├── <run_name>-verifier_final.pt
+│   └── training.log
+└── pipeline_state.json
+```
+
+<Note>
+Each checkpoint (.pt file) contains:
+- `model_state`: Model weights
+- `optimizer_state`: Optimizer state for resumption
+- `config`: Model architecture config
+- `step`: Training step number
+</Note>
+
+## Pipeline state
+
+When running the full pipeline with `--stage all`, the runner saves a `pipeline_state.json` file tracking all checkpoint paths:
+
+```json
+{
+  "pretrain_checkpoint": "experiments/runs/local-full/pretrain_final.pt",
+  "sft_checkpoint": "experiments/runs/local-full/sft_final.pt",
+  "dpo_checkpoint": "experiments/runs/local-full/dpo_final.pt",
+  "verifier_checkpoint": "experiments/runs/local-full/verifier_final.pt",
+  "completed_at": "2026-03-01T10:30:00"
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Pretraining" icon="brain" href="/pipeline/pretraining">
+    Learn about the pretraining stage and dataset options
+  </Card>
+  <Card title="SFT" icon="graduation-cap" href="/pipeline/sft">
+    Understand supervised fine-tuning on instruction data
+  </Card>
+  <Card title="DPO" icon="scale-balanced" href="/pipeline/dpo">
+    Explore preference alignment with DPO
+  </Card>
+  <Card title="Verifier" icon="check-circle" href="/pipeline/verifier">
+    Train a verifier for answer correctness
+  </Card>
+</CardGroup>
+
+<Warning>
+The full pipeline requires significant compute time:
+- **local**: ~24 hours on RTX 3060
+- **gpu**: ~48 hours on A100/H100
+
+Consider starting with the smoke test preset to validate your setup before running the full pipeline.
+</Warning>

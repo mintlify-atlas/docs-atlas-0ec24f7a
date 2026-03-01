@@ -1,0 +1,292 @@
+---
+title: Verifier model
+description: Encoder-based model for scoring solution correctness
+---
+
+## VerifierConfig
+
+Configuration dataclass for the verifier encoder model.
+
+### Constructor
+
+```python
+from modern_llm.models.verifier import VerifierConfig
+
+config = VerifierConfig(
+    vocab_size=50257,
+    d_model=512,
+    num_layers=4,
+    n_heads=8,
+    max_position_embeddings=512,
+    num_classes=2
+)
+```
+
+<ParamField path="vocab_size" type="int" required>
+  Size of the vocabulary. Must be positive.
+</ParamField>
+
+<ParamField path="d_model" type="int" default="512">
+  Model hidden dimension. Must be divisible by n_heads.
+</ParamField>
+
+<ParamField path="num_layers" type="int" default="4">
+  Number of transformer encoder layers. Must be positive.
+</ParamField>
+
+<ParamField path="n_heads" type="int" default="8">
+  Number of attention heads. Must divide d_model evenly.
+</ParamField>
+
+<ParamField path="max_position_embeddings" type="int" default="512">
+  Maximum sequence length supported by positional embeddings.
+</ParamField>
+
+<ParamField path="num_classes" type="int" default="2">
+  Number of output classes. Must be >= 2. Default is 2 for binary classification (incorrect/correct).
+</ParamField>
+
+<ParamField path="dropout" type="float" default="0.1">
+  Dropout probability applied throughout the model.
+</ParamField>
+
+---
+
+## VerifierModel
+
+Encoder-only transformer model for verifying solution correctness.
+
+The verifier is designed for scoring generated solutions in math, reasoning, or QA tasks. It follows the approach of training lightweight judges (Cobbe et al., 2021; Lightman et al., 2023) using a transformer encoder to predict correctness logits.
+
+### Architecture
+
+```
+h₀ = token_embed(input_ids) + positional_embed
+h_L = TransformerEncoder(h₀)
+logits = classifier(pool(h_L))
+```
+
+The model uses:
+- Learned token and positional embeddings
+- Standard transformer encoder layers with GELU activation
+- Mean pooling over non-padded tokens
+- Linear classifier for final predictions
+
+### Constructor
+
+```python
+from modern_llm.models.verifier import VerifierModel, VerifierConfig
+
+config = VerifierConfig(
+    vocab_size=50257,
+    d_model=512,
+    num_layers=4,
+    n_heads=8
+)
+verifier = VerifierModel(config)
+```
+
+<ParamField path="config" type="VerifierConfig" required>
+  Verifier configuration containing all hyperparameters.
+</ParamField>
+
+### Attributes
+
+<ResponseField name="config" type="VerifierConfig">
+  The configuration object passed during initialization.
+</ResponseField>
+
+<ResponseField name="token_embed" type="nn.Embedding">
+  Token embedding layer of shape (vocab_size, d_model).
+</ResponseField>
+
+<ResponseField name="position_embed" type="nn.Embedding">
+  Positional embedding layer of shape (max_position_embeddings, d_model).
+</ResponseField>
+
+<ResponseField name="encoder" type="nn.TransformerEncoder">
+  Stack of num_layers transformer encoder layers.
+</ResponseField>
+
+<ResponseField name="classifier" type="nn.Linear">
+  Classification head: d_model -> num_classes.
+</ResponseField>
+
+### forward
+
+```python
+def forward(
+    self,
+    input_ids: Tensor,
+    attention_mask: Optional[Tensor] = None,
+    labels: Optional[Tensor] = None,
+) -> dict[str, Tensor]
+```
+
+Compute verifier predictions and optional loss.
+
+<ParamField path="input_ids" type="Tensor" required>
+  Input token IDs of shape (batch, seq_len).
+</ParamField>
+
+<ParamField path="attention_mask" type="Optional[Tensor]">
+  Attention mask of shape (batch, seq_len) with 1 for real tokens and 0 for padding.
+</ParamField>
+
+<ParamField path="labels" type="Optional[Tensor]">
+  Ground truth class labels of shape (batch,) with values in range [0, num_classes). When provided, loss is computed.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="logits" type="Tensor">
+  Classification logits of shape (batch, num_classes).
+</ResponseField>
+
+<ResponseField name="loss" type="Optional[Tensor]">
+  Cross-entropy loss (scalar) when labels are provided.
+</ResponseField>
+
+### score
+
+```python
+def score(
+    self,
+    input_ids: Tensor,
+    attention_mask: Optional[Tensor] = None
+) -> Tensor
+```
+
+Compute probability of correctness without gradients.
+
+<ParamField path="input_ids" type="Tensor" required>
+  Input token IDs of shape (batch, seq_len).
+</ParamField>
+
+<ParamField path="attention_mask" type="Optional[Tensor]">
+  Attention mask of shape (batch, seq_len).
+</ParamField>
+
+#### Returns
+
+<ResponseField name="scores" type="Tensor">
+  Correctness probabilities of shape (batch,) with values in [0, 1]. Returns P(class=1) for binary classification.
+</ResponseField>
+
+### predict
+
+```python
+def predict(
+    self,
+    input_ids: Tensor,
+    attention_mask: Optional[Tensor] = None
+) -> Tensor
+```
+
+Predict class labels without gradients.
+
+<ParamField path="input_ids" type="Tensor" required>
+  Input token IDs of shape (batch, seq_len).
+</ParamField>
+
+<ParamField path="attention_mask" type="Optional[Tensor]">
+  Attention mask of shape (batch, seq_len).
+</ParamField>
+
+#### Returns
+
+<ResponseField name="predictions" type="Tensor">
+  Predicted class indices of shape (batch,). For binary classification: 0=incorrect, 1=correct.
+</ResponseField>
+
+### Example
+
+```python
+import torch
+from modern_llm.models.verifier import VerifierModel, VerifierConfig
+
+# Initialize verifier
+config = VerifierConfig(
+    vocab_size=50257,
+    d_model=512,
+    num_layers=4,
+    n_heads=8,
+    dropout=0.1
+)
+verifier = VerifierModel(config)
+
+# Training: compute loss
+input_ids = torch.randint(0, config.vocab_size, (4, 128))
+labels = torch.randint(0, 2, (4,))  # Binary labels
+outputs = verifier(input_ids, labels=labels)
+loss = outputs["loss"]
+logits = outputs["logits"]
+
+# Inference: get predictions
+verifier.eval()
+input_ids = torch.randint(0, config.vocab_size, (8, 128))
+predictions = verifier.predict(input_ids)
+print(predictions)  # Tensor of 0s and 1s
+
+# Score solutions
+scores = verifier.score(input_ids)
+print(scores)  # Probabilities in [0, 1]
+```
+
+### Training workflow
+
+```python
+import torch
+import torch.optim as optim
+from modern_llm.models.verifier import VerifierModel, VerifierConfig
+
+# Setup
+config = VerifierConfig(vocab_size=50257)
+verifier = VerifierModel(config)
+optimizer = optim.AdamW(verifier.parameters(), lr=1e-4)
+
+# Training step
+verifier.train()
+for batch in dataloader:
+    input_ids = batch["input_ids"]
+    attention_mask = batch["attention_mask"]
+    labels = batch["labels"]  # 0=incorrect, 1=correct
+    
+    outputs = verifier(input_ids, attention_mask, labels)
+    loss = outputs["loss"]
+    
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Evaluation
+verifier.eval()
+with torch.no_grad():
+    for batch in val_loader:
+        predictions = verifier.predict(
+            batch["input_ids"],
+            batch["attention_mask"]
+        )
+        accuracy = (predictions == batch["labels"]).float().mean()
+```
+
+### Use cases
+
+The verifier model is useful for:
+- Ranking multiple generated solutions by correctness probability
+- Process reward modeling for reinforcement learning
+- Filtering low-quality generations before human review
+- Active learning by selecting uncertain predictions
+
+```python
+# Rank candidate solutions
+candidates = [tokenize(solution) for solution in solutions]
+input_ids = torch.stack(candidates)
+scores = verifier.score(input_ids)
+best_idx = scores.argmax()
+best_solution = solutions[best_idx]
+```
+
+### Complexity
+
+O(num_layers · seq_len² · d_model / n_heads) per forward pass.

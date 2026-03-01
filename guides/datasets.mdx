@@ -1,0 +1,525 @@
+---
+title: Datasets
+description: Load and preprocess datasets for pretraining, instruction tuning, and alignment
+---
+
+Modern LLM provides unified dataset loading for three training stages: causal language modeling (pretraining), instruction tuning (SFT), and preference learning (DPO/RLHF).
+
+## Language modeling datasets
+
+Use language modeling datasets for pretraining on large text corpora. Modern LLM includes a registry of common datasets with proper preprocessing.
+
+### Available datasets
+
+The `DATASET_REGISTRY` includes pre-configured datasets:
+
+```python
+from modern_llm.data import DATASET_REGISTRY
+
+for name, (hf_name, config, field) in DATASET_REGISTRY.items():
+    print(f"{name}: {hf_name}")
+```
+
+**Built-in datasets:**
+- `wikitext-2-raw-v1` - Small Wikipedia subset (2M tokens)
+- `wikitext-103-raw-v1` - Large Wikipedia subset (100M tokens)
+- `roneneldan/TinyStories` - Synthetic stories dataset
+- `openwebtext` - Web text corpus (8B tokens)
+- `wikipedia` - Full Wikipedia dump
+
+### Single dataset loading
+
+```python
+from transformers import AutoTokenizer
+from modern_llm.data import (
+    LanguageModelingDatasetConfig,
+    load_causal_lm_dataset,
+)
+
+# Configure dataset
+config = LanguageModelingDatasetConfig(
+    dataset_name="wikitext",
+    dataset_config_name="wikitext-2-raw-v1",
+    split="train",
+    text_field="text",
+    max_length=1024,
+    num_proc=4,  # Parallel processing
+    streaming=False,
+)
+
+# Load and tokenize
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+dataset = load_causal_lm_dataset(config, tokenizer)
+
+print(f"Dataset size: {len(dataset)}")
+print(f"Columns: {dataset.column_names}")
+# Output: ['input_ids', 'attention_mask', 'labels']
+```
+
+<Note>
+  The `load_causal_lm_dataset` function automatically creates labels by masking padding tokens with -100, so only real tokens contribute to the loss.
+</Note>
+
+### Multi-dataset mixing
+
+Combine multiple datasets for diverse pretraining:
+
+```python
+from transformers import AutoTokenizer
+from modern_llm.data import load_multi_dataset
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+# Load and mix multiple datasets
+dataset = load_multi_dataset(
+    dataset_names=[
+        "wikitext-103-raw-v1",
+        "openwebtext",
+        "roneneldan/TinyStories:100000",  # Limit to 100K samples
+    ],
+    tokenizer=tokenizer,
+    split="train",
+    max_length=1024,
+)
+
+print(f"Combined dataset: {len(dataset)} samples")
+```
+
+<Accordion title="Dataset sampling syntax">
+  Use the `name:N` syntax to limit individual datasets:
+
+  ```python
+  dataset_names = [
+      "wikitext-103-raw-v1",           # Use all samples
+      "roneneldan/TinyStories:100000", # Cap at 100K
+      "openwebtext:500000",            # Cap at 500K
+  ]
+  ```
+
+  This is useful for preventing large datasets from dominating the training mix. The datasets are automatically shuffled and concatenated.
+</Accordion>
+
+### Custom datasets
+
+Load datasets not in the registry:
+
+```python
+from modern_llm.data import (
+    LanguageModelingDatasetConfig,
+    load_causal_lm_dataset,
+)
+
+# Load from HuggingFace Hub
+config = LanguageModelingDatasetConfig(
+    dataset_name="EleutherAI/pile",
+    dataset_config_name=None,
+    split="train",
+    text_field="text",  # Adjust to match dataset schema
+    max_length=2048,
+)
+
+dataset = load_causal_lm_dataset(config, tokenizer)
+```
+
+## Instruction datasets
+
+Instruction datasets are used for supervised fine-tuning (SFT) to teach models to follow instructions.
+
+### Loading instruction datasets
+
+```python
+from transformers import AutoTokenizer
+from modern_llm.data import (
+    InstructionDatasetConfig,
+    load_instruction_dataset,
+)
+
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=1024,
+    split="train",
+    num_examples=None,  # Use all examples
+    include_input=True,
+)
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+dataset = load_instruction_dataset(config, tokenizer)
+
+print(f"Instruction examples: {len(dataset)}")
+```
+
+### Instruction formatting
+
+Modern LLM uses a standardized template for instruction examples:
+
+```python
+from modern_llm.data import format_instruction
+
+# Format with input field
+formatted = format_instruction(
+    instruction="Summarize the following text.",
+    input_text="Machine learning is a subset of artificial intelligence...",
+    output="Machine learning focuses on teaching computers to learn from data.",
+)
+
+print(formatted)
+# Output:
+# ### Instruction:
+# Summarize the following text.
+#
+# ### Input:
+# Machine learning is a subset of artificial intelligence...
+#
+# ### Response:
+# Machine learning focuses on teaching computers to learn from data.
+```
+
+<Tabs>
+  <Tab title="With input">
+    ```python
+    formatted = format_instruction(
+        instruction="Translate to French.",
+        input_text="Hello, how are you?",
+        output="Bonjour, comment allez-vous?",
+    )
+    ```
+  </Tab>
+  <Tab title="Without input">
+    ```python
+    formatted = format_instruction(
+        instruction="Write a haiku about programming.",
+        input_text="",  # Empty input
+        output="Code flows like water\nBugs emerge then disappear\nSilence, then it works",
+    )
+    # Uses INSTRUCTION_TEMPLATE_NO_INPUT (no Input section)
+    ```
+  </Tab>
+</Tabs>
+
+### Response-only loss masking
+
+The `InstructionDataset` class automatically masks prompt tokens so only the response contributes to loss:
+
+```python
+from modern_llm.data import InstructionDataset, InstructionDatasetConfig
+
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=1024,
+)
+
+dataset = InstructionDataset(config, tokenizer)
+
+# Check a sample
+sample = dataset[0]
+print(f"Input IDs shape: {sample['input_ids'].shape}")
+print(f"Labels shape: {sample['labels'].shape}")
+print(f"Masked tokens (prompt): {(sample['labels'] == -100).sum()}")
+```
+
+<Note>
+  Tokens in the instruction and input sections are masked with -100 in the labels, ensuring the model only learns to generate responses, not memorize prompts.
+</Note>
+
+### Creating a DataLoader
+
+```python
+from modern_llm.data import (
+    load_instruction_dataset,
+    create_instruction_dataloader,
+)
+
+dataset = load_instruction_dataset(config, tokenizer)
+
+# Create DataLoader with proper collation
+dataloader = create_instruction_dataloader(
+    dataset=dataset,
+    batch_size=8,
+    shuffle=True,
+    num_workers=4,
+)
+
+# Use in training loop
+for batch in dataloader:
+    input_ids = batch["input_ids"]       # [batch_size, seq_len]
+    attention_mask = batch["attention_mask"]
+    labels = batch["labels"]
+    # Forward pass...
+```
+
+### Supported formats
+
+Modern LLM automatically handles multiple instruction dataset formats:
+
+<Accordion title="Alpaca format">
+  ```json
+  {
+    "instruction": "Write a short story about a robot.",
+    "input": "",
+    "output": "Once upon a time, there was a robot named..."
+  }
+  ```
+  The most common format used by Alpaca, Dolly, and similar datasets.
+</Accordion>
+
+<Accordion title="OpenAssistant format">
+  ```json
+  {
+    "text": "Human: What is photosynthesis?\n\nAssistant: Photosynthesis is..."
+  }
+  ```
+  Conversational format with multi-turn dialogues.
+</Accordion>
+
+<Accordion title="HH-RLHF format">
+  ```json
+  {
+    "chosen": "Human: Explain quantum computing.\n\nAssistant: Quantum computing uses..."
+  }
+  ```
+  For SFT, Modern LLM trains on the "chosen" responses from preference datasets.
+</Accordion>
+
+## Preference datasets
+
+Preference datasets contain pairs of responses (chosen vs. rejected) for alignment training with DPO or RLHF.
+
+### Loading preference datasets
+
+```python
+from modern_llm.data import (
+    PreferenceDatasetConfig,
+    load_preference_dataset,
+)
+
+config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+    chosen_field="chosen",
+    rejected_field="rejected",
+    prompt_field=None,  # Auto-extract from conversations
+)
+
+dataset = load_preference_dataset(config)
+
+print(f"Preference pairs: {len(dataset)}")
+print(f"Columns: {dataset.column_names}")
+# Output: ['prompt', 'chosen', 'rejected']
+```
+
+### Anthropic HH-RLHF format
+
+Modern LLM automatically parses Anthropic's conversational format:
+
+```python
+config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+)
+
+dataset = load_preference_dataset(config)
+
+# Check a sample
+sample = dataset[0]
+print(f"Prompt: {sample['prompt'][:100]}...")
+print(f"Chosen: {sample['chosen'][:100]}...")
+print(f"Rejected: {sample['rejected'][:100]}...")
+```
+
+<Accordion title="HH-RLHF parsing">
+  The HH-RLHF dataset format:
+  ```
+  Human: <first question>
+
+  Assistant: <first response>
+
+  Human: <follow-up>
+
+  Assistant: <final response>
+  ```
+
+  Modern LLM extracts:
+  - **Prompt**: Everything up to the last "Assistant:" marker
+  - **Response**: The last assistant turn
+  - **Chosen/Rejected**: Parsed from both preference options
+
+  This happens automatically in `_process_hh_rlhf()` and `_extract_prompt_and_response_hh()`.
+</Accordion>
+
+### Custom preference datasets
+
+```python
+config = PreferenceDatasetConfig(
+    dataset_name="my-org/my-preference-data",
+    split="train",
+    chosen_field="better_response",
+    rejected_field="worse_response",
+    prompt_field="question",  # Explicit prompt field
+)
+
+dataset = load_preference_dataset(config)
+```
+
+## DataLoader creation
+
+All dataset types can be used with PyTorch DataLoaders:
+
+```python
+from torch.utils.data import DataLoader
+
+# Language modeling
+lm_dataset = load_causal_lm_dataset(lm_config, tokenizer)
+lm_loader = DataLoader(
+    lm_dataset,
+    batch_size=32,
+    shuffle=True,
+    num_workers=4,
+    pin_memory=True,
+)
+
+# Instruction tuning (use helper function)
+instruction_dataset = load_instruction_dataset(inst_config, tokenizer)
+instruction_loader = create_instruction_dataloader(
+    instruction_dataset,
+    batch_size=16,
+    shuffle=True,
+    num_workers=4,
+)
+
+# Preference datasets (custom collation for pairs)
+preference_dataset = load_preference_dataset(pref_config)
+# See DPO training scripts for preference-specific collation
+```
+
+## Complete examples
+
+### Pretraining data pipeline
+
+```python
+from transformers import AutoTokenizer
+from modern_llm.data import load_multi_dataset
+from torch.utils.data import DataLoader
+
+# Load tokenizer
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+tokenizer.pad_token = tokenizer.eos_token
+
+# Load and mix datasets
+dataset = load_multi_dataset(
+    dataset_names=[
+        "wikitext-103-raw-v1",
+        "openwebtext:500000",
+        "roneneldan/TinyStories:100000",
+    ],
+    tokenizer=tokenizer,
+    split="train",
+    max_length=1024,
+)
+
+# Create DataLoader
+train_loader = DataLoader(
+    dataset,
+    batch_size=32,
+    shuffle=True,
+    num_workers=8,
+    pin_memory=True,
+)
+
+print(f"Total batches: {len(train_loader)}")
+```
+
+### SFT data pipeline
+
+```python
+from transformers import AutoTokenizer
+from modern_llm.data import (
+    InstructionDatasetConfig,
+    load_instruction_dataset,
+    create_instruction_dataloader,
+)
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+tokenizer.pad_token = tokenizer.eos_token
+
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=1024,
+    split="train",
+)
+
+dataset = load_instruction_dataset(config, tokenizer)
+dataloader = create_instruction_dataloader(
+    dataset,
+    batch_size=16,
+    shuffle=True,
+    num_workers=4,
+)
+
+for batch in dataloader:
+    print(f"Batch shape: {batch['input_ids'].shape}")
+    print(f"Masked tokens: {(batch['labels'] == -100).sum().item()}")
+    break
+```
+
+### DPO data pipeline
+
+```python
+from modern_llm.data import (
+    PreferenceDatasetConfig,
+    load_preference_dataset,
+)
+
+config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+)
+
+dataset = load_preference_dataset(config)
+
+# Each example has prompt, chosen, rejected
+for i in range(3):
+    sample = dataset[i]
+    print(f"\nExample {i}:")
+    print(f"Prompt length: {len(sample['prompt'])}")
+    print(f"Chosen length: {len(sample['chosen'])}")
+    print(f"Rejected length: {len(sample['rejected'])}")
+```
+
+## Tips and best practices
+
+<Tip>
+  **Dataset mixing**: When combining datasets, use the `:N` syntax to prevent large datasets from dominating:
+  ```python
+  dataset_names=[
+      "wikitext-103-raw-v1",
+      "roneneldan/TinyStories:100000",  # Limit TinyStories
+  ]
+  ```
+</Tip>
+
+<Tip>
+  **Tokenizer padding**: Always set `pad_token` before using datasets:
+  ```python
+  tokenizer.pad_token = tokenizer.eos_token
+  ```
+</Tip>
+
+<Tip>
+  **Parallel processing**: Use `num_proc` for faster tokenization:
+  ```python
+  config = LanguageModelingDatasetConfig(
+      dataset_name="wikitext-103-raw-v1",
+      num_proc=8,  # Use 8 processes
+  )
+  ```
+</Tip>
+
+<Note>
+  All datasets are cached by HuggingFace `datasets` library. Subsequent loads will be much faster.
+</Note>
+
+## See also
+
+- [Configuration](/guides/configuration) - Configure dataset loading and mixing
+- [Training Scripts](/api/training/train-lm) - Use datasets in training pipelines
+- [Evaluation](/guides/evaluation) - Evaluate models on downstream tasks

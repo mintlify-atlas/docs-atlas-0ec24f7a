@@ -1,0 +1,194 @@
+---
+title: Model configuration
+description: Configure model architecture with ModernLLMConfig and MoEConfig
+---
+
+## ModernLLMConfig
+
+Configuration for the custom decoder-only Transformer architecture. The fields mirror decoder-only language models such as GPT (Radford et al., 2018) and LLaMA (Touvron et al., 2023), capturing architectural toggles like RoPE, RMSNorm, SwiGLU, GQA, and MoE discussed in those papers.
+
+### Required parameters
+
+<ParamField path="vocab_size" type="int" required>
+  Size of the vocabulary. Must be positive.
+</ParamField>
+
+<ParamField path="d_model" type="int" required>
+  Hidden dimension of the model. Must be positive and divisible by `n_heads`.
+</ParamField>
+
+<ParamField path="n_layers" type="int" required>
+  Number of transformer layers. Must be positive.
+</ParamField>
+
+<ParamField path="n_heads" type="int" required>
+  Number of attention heads. Must divide `d_model` evenly.
+</ParamField>
+
+<ParamField path="ffn_hidden_size" type="int" required>
+  Hidden size of the feedforward layer. Must exceed `d_model`.
+</ParamField>
+
+<ParamField path="max_seq_len" type="int" required>
+  Maximum sequence length for positional encoding. Must be positive.
+</ParamField>
+
+### Optional parameters
+
+<ParamField path="rmsnorm_eps" type="float" default="1e-5">
+  Epsilon value for RMSNorm stability. Must be positive.
+</ParamField>
+
+<ParamField path="dropout" type="float" default="0.0">
+  Dropout probability. Must be in [0, 1).
+</ParamField>
+
+<ParamField path="initializer_range" type="float" default="0.02">
+  Standard deviation for weight initialization. Must be positive.
+</ParamField>
+
+<ParamField path="rope_theta" type="float" default="10000.0">
+  Base frequency for Rotary Position Embeddings (RoPE).
+</ParamField>
+
+<ParamField path="rope_scaling" type="Optional[float]" default="None">
+  Scaling factor for RoPE to extend context length. Must be positive if provided.
+</ParamField>
+
+<ParamField path="use_rope" type="bool" default="True">
+  Whether to use Rotary Position Embeddings.
+</ParamField>
+
+<ParamField path="use_attention_sinks" type="bool" default="True">
+  Whether to use attention sinks for improved streaming inference.
+</ParamField>
+
+<ParamField path="num_attention_sinks" type="int" default="2">
+  Number of attention sink tokens. Must be positive when `use_attention_sinks` is True.
+</ParamField>
+
+<ParamField path="use_swiglu" type="bool" default="True">
+  Whether to use SwiGLU activation in the feedforward layer.
+</ParamField>
+
+<ParamField path="swiglu_multiplier" type="float" default="2.0">
+  Multiplier for the hidden dimension when using SwiGLU.
+</ParamField>
+
+<ParamField path="use_gqa" type="bool" default="False">
+  Whether to use Grouped Query Attention (GQA).
+</ParamField>
+
+<ParamField path="gqa_groups" type="Optional[int]" default="None">
+  Number of groups for GQA. Required when `use_gqa` is True. Must divide `n_heads` evenly.
+</ParamField>
+
+<ParamField path="use_moe" type="bool" default="False">
+  Whether to use Mixture-of-Experts feedforward layers.
+</ParamField>
+
+<ParamField path="moe_config" type="Optional[MoEConfig]" default="None">
+  MoE configuration. Required when `use_moe` is True.
+</ParamField>
+
+<ParamField path="tie_embeddings" type="bool" default="True">
+  Whether to share weights between input and output embeddings.
+</ParamField>
+
+### Example
+
+```python
+from modern_llm.config import ModernLLMConfig, MoEConfig
+
+# Standard decoder-only config (GPT-2 small)
+config = ModernLLMConfig(
+    vocab_size=50257,
+    d_model=768,
+    n_layers=12,
+    n_heads=12,
+    ffn_hidden_size=3072,
+    max_seq_len=1024,
+    dropout=0.1,
+)
+
+# Config with Grouped Query Attention
+gqa_config = ModernLLMConfig(
+    vocab_size=50257,
+    d_model=1024,
+    n_layers=16,
+    n_heads=16,
+    ffn_hidden_size=4096,
+    max_seq_len=2048,
+    use_gqa=True,
+    gqa_groups=4,  # 16 heads / 4 groups = 4 heads per group
+)
+
+# Config with Mixture-of-Experts
+moe_config = ModernLLMConfig(
+    vocab_size=50257,
+    d_model=768,
+    n_layers=12,
+    n_heads=12,
+    ffn_hidden_size=3072,
+    max_seq_len=1024,
+    use_moe=True,
+    moe_config=MoEConfig(
+        num_experts=8,
+        top_k=2,
+        dropout=0.1,
+        capacity_factor=1.25,
+    ),
+)
+```
+
+---
+
+## MoEConfig
+
+Configuration for a Mixture-of-Experts feedforward sub-layer.
+
+### Parameters
+
+<ParamField path="num_experts" type="int" default="4">
+  Number of expert networks. Must be positive.
+</ParamField>
+
+<ParamField path="top_k" type="int" default="2">
+  Number of experts to route each token to. Must be in [1, num_experts].
+</ParamField>
+
+<ParamField path="dropout" type="float" default="0.0">
+  Dropout probability for expert outputs. Must be in [0, 1).
+</ParamField>
+
+<ParamField path="capacity_factor" type="float" default="1.0">
+  Capacity factor for expert load balancing. Must be >= 1.0.
+</ParamField>
+
+### Example
+
+```python
+from modern_llm.config import MoEConfig
+
+# Standard MoE config
+moe = MoEConfig(
+    num_experts=8,
+    top_k=2,
+    dropout=0.1,
+    capacity_factor=1.25,
+)
+
+# High-capacity MoE for better load balancing
+high_capacity_moe = MoEConfig(
+    num_experts=16,
+    top_k=4,
+    capacity_factor=1.5,
+)
+```
+
+### Validation rules
+
+- `num_experts` must be positive
+- `top_k` must be between 1 and `num_experts`
+- `dropout` must be in [0, 1)
+- `capacity_factor` must be >= 1.0

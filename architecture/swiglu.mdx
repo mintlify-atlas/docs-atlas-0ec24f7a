@@ -1,0 +1,634 @@
+---
+title: "SwiGLU"
+description: "Gated Linear Unit with Swish activation for improved feedforward networks in transformers"
+---
+
+## Overview
+
+SwiGLU is a variant of the Gated Linear Unit (GLU) family that uses the Swish activation function. It has become the standard feedforward network activation in modern large language models, replacing traditional activations like ReLU and GELU.
+
+<Note>
+**Papers**: 
+- Shazeer (2020) - [GLU Variants Improve Transformer](https://arxiv.org/abs/2002.05202)
+- Chowdhery et al. (2022) - [PaLM: Scaling Language Modeling with Pathways](https://arxiv.org/abs/2204.02311)
+
+SwiGLU consistently outperforms other activations across various scales, from small models to 540B parameter models (PaLM).
+</Note>
+
+## Mathematical formulation
+
+### SwiGLU equation
+
+Given an input `x`, SwiGLU computes:
+
+```
+SwiGLU(x) = W_o[(W_g x) ⊙ swish(W_v x)]
+```
+
+Where:
+- **W_g**: Gate projection (linear layer)
+- **W_v**: Value projection (linear layer)
+- **W_o**: Output projection (linear layer)
+- **⊙**: Element-wise multiplication (gating)
+- **swish(x) = x · sigmoid(x)**: Swish activation function
+
+<Tabs>
+  <Tab title="Step-by-step computation">
+    Breaking down the SwiGLU computation:
+
+    ```python
+    # Step 1: Project input to 2 × hidden_dim
+    # This combines gate and value projections
+    gate_value = W_gv @ x  # Shape: (..., 2 × hidden_dim)
+    
+    # Step 2: Split into gate and value
+    gate, value = split(gate_value)  # Each: (..., hidden_dim)
+    
+    # Step 3: Apply Swish to gate
+    gate_activated = gate * sigmoid(gate)
+    
+    # Step 4: Element-wise multiplication (gating)
+    gated = gate_activated ⊙ value
+    
+    # Step 5: Project back to output dimension
+    output = W_o @ gated  # Shape: (..., out_features)
+    ```
+
+    **Key insight**: The gate controls information flow from the value projection.
+  </Tab>
+  
+  <Tab title="Comparison to other GLUs">
+    The GLU family differs in the activation function:
+
+    | Variant | Gate Activation | Formula |
+    |---------|----------------|----------|
+    | **GLU** | Sigmoid | `(W_g x ⊙ σ(W_v x))` |
+    | **GEGLU** | GELU | `(W_g x ⊙ GELU(W_v x))` |
+    | **SwiGLU** | Swish | `(W_g x ⊙ swish(W_v x))` |
+    | **ReGLU** | ReLU | `(W_g x ⊙ ReLU(W_v x))` |
+
+    **Why Swish?**
+    - Smooth, differentiable everywhere
+    - Non-monotonic (has a small negative region)
+    - Self-gating property: x · σ(x)
+    - Empirically outperforms other activations
+  </Tab>
+  
+  <Tab title="Swish activation">
+    The Swish activation function is:
+
+    ```
+    swish(x) = x · sigmoid(x) = x / (1 + e^(-x))
+    ```
+
+    **Properties**:
+    - **Smooth**: Infinitely differentiable
+    - **Non-monotonic**: Slight negative region for x < 0
+    - **Bounded below**: swish(x) ≥ -0.278 (approximately)
+    - **Unbounded above**: swish(x) → x as x → ∞
+    - **Near-identity**: For large positive x, swish(x) ≈ x
+    - **Near-zero**: For large negative x, swish(x) ≈ 0
+
+    **Visualization**:
+    ```
+    swish(x):         ReLU(x):
+       |
+      /|              /|
+     / |             / |
+    /  |  ___       /  |
+    __/  /        _/   |
+    ```
+
+    The non-monotonic "dip" helps with gradient flow during training.
+  </Tab>
+</Tabs>
+
+## Implementation
+
+Modern LLM implements SwiGLU efficiently using PyTorch operations:
+
+<Tabs>
+  <Tab title="Full implementation">
+    ```python layers.py:58-114
+    def _swish(x: Tensor) -> Tensor:
+        """Swish activation σ(x) = x · sigmoid(x) (Ramachandran et al., 2018).
+
+        Pre:
+            - x is any float tensor.
+        Post:
+            - same shape as x with smooth non-linearity applied.
+        Complexity:
+            - O(1) per element.
+        """
+        return x * torch.sigmoid(x)
+
+
+    class SwiGLU(nn.Module):
+        """SwiGLU feedforward block (Shazeer, 2020; Chowdhery et al., 2022).
+
+        Math:
+            SwiGLU(x) = W_o[(W_g x) ⊙ swish(W_v x)]
+            where W_g splits into gate/value projections and ⊙ is element-wise multiply.
+
+        Pre:
+            - x.shape[-1] == in_features.
+        Post:
+            - returns a tensor with shape (..., out_features).
+        Complexity:
+            - O(in_features * hidden_features) per token due to the linear layers.
+        Invariants:
+            - gate/value split always halves the projected dimension (validated via chunk).
+        """
+
+        def __init__(
+            self,
+            in_features: int,
+            hidden_features: int,
+            out_features: int | None = None,
+            bias: bool = True,
+        ) -> None:
+            super().__init__()
+            if in_features <= 0 or hidden_features <= 0:
+                raise ValueError("in_features and hidden_features must be positive.")
+            self.in_features = in_features
+            self.hidden_features = hidden_features
+            self.out_features = out_features or in_features
+
+            # Combined gate and value projection (efficiency)
+            self.gate = nn.Linear(in_features, hidden_features * 2, bias=bias)
+            self.proj = nn.Linear(hidden_features, self.out_features, bias=bias)
+
+        def forward(self, x: Tensor) -> Tensor:
+            if x.shape[-1] != self.in_features:
+                raise ValueError(
+                    f"Input last dimension mismatch: expected {self.in_features}, got {x.shape[-1]}"
+                )
+            # Split gate and value from combined projection
+            gate_out, value = self.gate(x).chunk(2, dim=-1)
+            
+            # Apply Swish to gate
+            activated = _swish(gate_out)
+            
+            # Element-wise gating
+            gated = activated * value
+            
+            # Project to output
+            return self.proj(gated)
+    ```
+  </Tab>
+  
+  <Tab title="Usage in decoder">
+    SwiGLU replaces the traditional feedforward network in each decoder block:
+
+    ```python transformer.py:45-76
+    class DecoderBlock(nn.Module):
+        def __init__(self, config: ModernLLMConfig) -> None:
+            super().__init__()
+            self.attn = MultiHeadAttention(attn_config)
+            self.attn_norm = RMSNorm(config.d_model)
+            self.ffn_norm = RMSNorm(config.d_model)
+            
+            # SwiGLU feedforward (replaces MLP with GELU)
+            hidden = config.ffn_hidden_size  # Typically 4 × d_model
+            self.ffn = SwiGLU(
+                in_features=config.d_model,
+                hidden_features=hidden,
+                out_features=config.d_model
+            )
+            
+            self.dropout = nn.Dropout(config.dropout)
+
+        def forward(self, hidden_states: Tensor) -> Tensor:
+            # Attention block
+            attn_input = self.attn_norm(hidden_states)
+            attn_output = self.attn(attn_input)
+            hidden_states = hidden_states + self.dropout(attn_output)
+
+            # SwiGLU feedforward block
+            ffn_input = self.ffn_norm(hidden_states)
+            ffn_output = self.ffn(ffn_input)
+            hidden_states = hidden_states + self.dropout(ffn_output)
+            
+            return hidden_states
+    ```
+  </Tab>
+  
+  <Tab title="Efficiency optimization">
+    **Key optimization**: Combine gate and value projections into single linear layer:
+
+    ```python
+    # Naive implementation (2 separate projections)
+    self.gate_proj = nn.Linear(d, hidden * 1)
+    self.value_proj = nn.Linear(d, hidden * 1)
+    
+    gate = self.gate_proj(x)
+    value = self.value_proj(x)
+    # 2 separate matrix multiplications
+    
+    # Optimized implementation (single projection)
+    self.gate = nn.Linear(d, hidden * 2)  # Combined!
+    
+    gate, value = self.gate(x).chunk(2, dim=-1)
+    # 1 matrix multiplication, then split
+    # ~1.8x faster due to better memory locality
+    ```
+
+    This optimization is critical for training efficiency at scale.
+  </Tab>
+</Tabs>
+
+## Why SwiGLU works
+
+### Gating mechanism
+
+The gating operation provides dynamic, input-dependent control:
+
+<AccordionGroup>
+  <Accordion title="Information flow control" icon="filter">
+    The gate learns to selectively pass or block information:
+
+    ```python
+    # If gate ≈ 0: block this feature
+    gate = 0.1
+    value = 5.0
+    output = 0.1 * 5.0 = 0.5  # Mostly blocked
+    
+    # If gate ≈ 1: pass this feature
+    gate = 0.9
+    value = 5.0
+    output = 0.9 * 5.0 = 4.5  # Mostly passed
+    ```
+
+    **Advantage over standard activation**:
+    - ReLU/GELU: Fixed decision based only on activation value
+    - GLU: Separate pathway (value) can inform gating decision
+  </Accordion>
+
+  <Accordion title="Gradient flow" icon="wave-pulse">
+    SwiGLU provides better gradient flow than standard activations:
+
+    ```python
+    # Gradient through SwiGLU
+    ∂L/∂x = ∂L/∂output × [
+        swish'(gate) × value × W_g +  # Gate gradient path
+        swish(gate) × W_v               # Value gradient path
+    ] × W_o
+    ```
+
+    **Two gradient paths**:
+    1. Through the gate activation
+    2. Through the value (gated by activation)
+
+    This redundancy helps prevent vanishing gradients in deep networks.
+  </Accordion>
+
+  <Accordion title="Capacity and efficiency" icon="gauge-high">
+    SwiGLU balances model capacity with computational cost:
+
+    **Traditional FFN** (with GELU):
+    ```
+    hidden = W₁x
+    activated = GELU(hidden)
+    output = W₂(activated)
+    
+    Parameters: d × 4d + 4d × d = 8d²
+    ```
+
+    **SwiGLU**:
+    ```
+    gate, value = split(W_gv x)
+    gated = swish(gate) ⊙ value
+    output = W_o(gated)
+    
+    Parameters: d × 2h + h × d
+    For same compute: h = (8d² - d×d)/(2d + d) ≈ 2.67d
+    Effective capacity: ~33% more parameters in hidden layer!
+    ```
+
+    Or equivalently: For same parameter count, SwiGLU is slightly more compute-efficient.
+  </Accordion>
+</AccordionGroup>
+
+## Empirical results
+
+### Performance comparison
+
+From Shazeer (2020) - GLU Variants paper:
+
+| Model | Activation | WikiText-103 PPL | Params | Training Cost |
+|-------|------------|------------------|--------|---------------|
+| Transformer | GELU | 24.2 | 256M | 1.0× |
+| Transformer | ReLU | 25.1 | 256M | 1.0× |
+| Transformer | GLU | 23.8 | 256M | 1.15× |
+| Transformer | **SwiGLU** | **23.5** | 256M | 1.15× |
+| Transformer | GEGLU | 23.6 | 256M | 1.15× |
+
+<Info>
+SwiGLU achieves the best perplexity with only 15% additional compute compared to standard GELU feedforward.
+</Info>
+
+### Adoption in modern LLMs
+
+SwiGLU has been adopted by state-of-the-art models:
+
+- **PaLM** (540B, Google, 2022): First major model to use SwiGLU at scale
+- **LLaMA** (7B-65B, Meta, 2023): Uses SwiGLU exclusively
+- **LLaMA 2** (7B-70B, Meta, 2023): Continues with SwiGLU
+- **Falcon** (7B-180B, TII, 2023): SwiGLU variant
+- **Mistral** (7B, Mistral AI, 2023): SwiGLU
+
+<Tip>
+As of 2023, SwiGLU has become the default choice for feedforward networks in decoder-only transformers. Most new LLMs use SwiGLU unless there's a specific reason not to.
+</Tip>
+
+## Configuration
+
+### Hidden dimension size
+
+The hidden dimension is typically 4× the model dimension:
+
+```python
+config = ModernLLMConfig(
+    d_model=768,
+    ffn_hidden_size=3072,  # 4 × d_model
+)
+```
+
+<Tabs>
+  <Tab title="Standard ratios">
+    Common ratios of `hidden_features / d_model`:
+
+    | Ratio | Use case | Example |
+    |-------|----------|----------|
+    | 2× | Small models, efficiency | d=256, h=512 |
+    | 2.67× | Matched to standard FFN | d=768, h=2048 |
+    | 4× | Standard (most common) | d=768, h=3072 |
+    | 5.33× | High capacity | d=768, h=4096 |
+    | 8× | Maximum capacity | d=768, h=6144 |
+
+    **Why 4×?**
+    - Historical: Inherited from original Transformer paper
+    - Empirical: Works well across many tasks and scales
+    - Balance: Good trade-off between capacity and efficiency
+  </Tab>
+  
+  <Tab title="Capacity vs. efficiency">
+    **Higher hidden dimension**:
+    - ✅ More model capacity
+    - ✅ Better representation power
+    - ❌ More parameters
+    - ❌ More compute (linear in hidden size)
+    - ❌ More memory
+
+    **Lower hidden dimension**:
+    - ✅ Fewer parameters
+    - ✅ Faster training and inference
+    - ✅ Lower memory usage
+    - ❌ Less capacity
+    - ❌ May underfit complex tasks
+
+    **Rule of thumb**: Start with 4×, reduce to 2.67× if compute-constrained, increase to 5.33× if performance-critical.
+  </Tab>
+  
+  <Tab title="Dynamic sizing">
+    Adjust FFN size based on layer depth (experimental):
+
+    ```python
+    # Early layers: smaller FFN (local patterns)
+    # Later layers: larger FFN (global reasoning)
+    
+    def get_ffn_size(layer_idx: int, n_layers: int, d_model: int) -> int:
+        ratio = 3.0 + (layer_idx / n_layers)  # 3× to 4×
+        return int(d_model * ratio)
+    
+    # Layer 0: 3.0 × 768 = 2304
+    # Layer 6: 3.5 × 768 = 2688
+    # Layer 11: 4.0 × 768 = 3072
+    ```
+
+    This is an area of active research.
+  </Tab>
+</Tabs>
+
+### Bias terms
+
+SwiGLU can be used with or without bias terms:
+
+```python
+self.ffn = SwiGLU(
+    in_features=config.d_model,
+    hidden_features=config.ffn_hidden_size,
+    bias=True,  # or False
+)
+```
+
+<Info>
+**Modern trend**: Most recent LLMs (LLaMA, PaLM) use `bias=False` in all linear layers, including SwiGLU. This:
+- Reduces parameters by ~0.1%
+- Slightly simplifies optimization
+- Has negligible impact on final performance
+</Info>
+
+## Computational cost
+
+### FLOPs analysis
+
+For sequence length `s`, model dimension `d`, hidden dimension `h`:
+
+```
+SwiGLU operations:
+1. Gate projection:    s × d × 2h FLOPs
+2. Swish activation:   s × h (negligible)
+3. Element-wise mult:  s × h (negligible)
+4. Output projection:  s × h × d FLOPs
+
+Total: s × d × (2h + h) = s × d × 3h FLOPs
+```
+
+For h = 4d (standard):
+```
+SwiGLU: s × d × 12d = 12sd² FLOPs per layer
+```
+
+Compare to standard FFN (d → 4d → d):
+```
+Standard FFN: s × d × 4d + s × 4d × d = 8sd² FLOPs per layer
+```
+
+<Tip>
+SwiGLU with h=2.67d matches the computational cost of standard FFN while providing more parameters in the hidden layer, effectively giving you more capacity for the same compute.
+</Tip>
+
+### Memory usage
+
+Per-layer memory for SwiGLU:
+
+| Component | Parameters | Activations (per token) |
+|-----------|------------|------------------------|
+| Gate projection | `d × 2h` | `2h` |
+| Output projection | `h × d` | `d` |
+| **Total** | `d(2h + h) = 3dh` | `2h + d` |
+
+For d=768, h=3072 (4d):
+- Parameters: 3 × 768 × 3072 = 7,077,888 ≈ 7.1M per layer
+- Activations: 2 × 3072 + 768 = 6,912 per token
+
+## Common issues and solutions
+
+<AccordionGroup>
+  <Accordion title="NaN losses with SwiGLU" icon="triangle-exclamation">
+    **Symptoms**: Training loss becomes NaN after some steps
+
+    **Potential causes**:
+    1. **Weight initialization too large**
+    2. **Learning rate too high**
+    3. **Gradient explosion in deep networks**
+
+    **Solutions**:
+    ```python
+    # 1. Check weight initialization
+    config.initializer_range = 0.02  # Standard deviation
+    
+    # 2. Reduce learning rate
+    config.learning_rate = 3e-4  # from 6e-4
+    
+    # 3. Enable gradient clipping
+    config.max_grad_norm = 1.0
+    
+    # 4. Use mixed precision carefully
+    use_amp = True
+    scaler = torch.cuda.amp.GradScaler()
+    ```
+  </Accordion>
+
+  <Accordion title="Memory overflow" icon="memory">
+    **Error**: CUDA out of memory during training
+
+    **SwiGLU-specific consideration**: SwiGLU uses 1.5× parameters of standard FFN for same hidden size.
+
+    **Solutions**:
+    1. **Reduce hidden dimension**:
+       ```python
+       config.ffn_hidden_size = int(config.d_model * 2.67)  # from 4×
+       ```
+    
+    2. **Use activation checkpointing**:
+       ```python
+       from torch.utils.checkpoint import checkpoint
+       
+       # In decoder block forward:
+       ffn_output = checkpoint(self.ffn, ffn_input, use_reentrant=False)
+       ```
+    
+    3. **Reduce batch size**:
+       ```python
+       config.train_batch_size = 16  # from 32
+       config.gradient_accumulation_steps = 2  # Maintain effective batch size
+       ```
+  </Accordion>
+
+  <Accordion title="Slow training" icon="clock">
+    **Issue**: Training is slower than expected with SwiGLU
+
+    **Check**: Are you using the optimized implementation?
+
+    ```python
+    # Slow: Separate projections
+    gate = self.gate_proj(x)
+    value = self.value_proj(x)
+    
+    # Fast: Combined projection
+    gate, value = self.gate(x).chunk(2, dim=-1)
+    ```
+
+    **Additional optimizations**:
+    - Use `torch.compile()` (PyTorch 2.0+)
+    - Enable CUDA graphs for static shapes
+    - Use fused kernels (e.g., `xFormers` library)
+  </Accordion>
+</AccordionGroup>
+
+## Variants and extensions
+
+<AccordionGroup>
+  <Accordion title="GeGLU" icon="brackets-curly">
+    Replace Swish with GELU activation:
+
+    ```python
+    def geglu(gate, value):
+        return F.gelu(gate) * value
+    ```
+
+    **Performance**: Slightly worse than SwiGLU (~0.1 PPL) but still better than standard GELU.
+  </Accordion>
+
+  <Accordion title="ReGLU" icon="square-root-variable">
+    Replace Swish with ReLU (most efficient):
+
+    ```python
+    def reglu(gate, value):
+        return F.relu(gate) * value
+    ```
+
+    **Performance**: Slightly worse than SwiGLU/GeGLU but fastest to compute.
+  </Accordion>
+
+  <Accordion title="Gated MoE" icon="layer-group">
+    Combine SwiGLU with Mixture of Experts:
+
+    ```python
+    class SwiGLUMoE(nn.Module):
+        def __init__(self, d_model, n_experts, top_k):
+            self.experts = nn.ModuleList([
+                SwiGLU(d_model, 4*d_model) 
+                for _ in range(n_experts)
+            ])
+            self.router = nn.Linear(d_model, n_experts)
+            self.top_k = top_k
+        
+        def forward(self, x):
+            # Route to top-k experts
+            router_logits = self.router(x)
+            router_probs, expert_indices = torch.topk(router_logits, self.top_k)
+            # Compute and combine expert outputs...
+    ```
+
+    Used in models like Switch Transformer and GLaM.
+  </Accordion>
+</AccordionGroup>
+
+## References
+
+<CardGroup cols={2}>
+  <Card title="GLU Variants Improve Transformer" icon="book" href="https://arxiv.org/abs/2002.05202">
+    Shazeer, 2020 - Original SwiGLU paper with extensive comparisons
+  </Card>
+  
+  <Card title="PaLM: Scaling Language Modeling with Pathways" icon="book" href="https://arxiv.org/abs/2204.02311">
+    Chowdhery et al., 2022 - First major deployment of SwiGLU
+  </Card>
+  
+  <Card title="LLaMA: Open and Efficient Foundation Language Models" icon="book" href="https://arxiv.org/abs/2302.13971">
+    Touvron et al., 2023 - SwiGLU in open-source LLMs
+  </Card>
+  
+  <Card title="Searching for Activation Functions" icon="book" href="https://arxiv.org/abs/1710.05941">
+    Ramachandran et al., 2018 - Discovery of Swish activation
+  </Card>
+</CardGroup>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Architecture overview" icon="sitemap" href="/architecture/overview">
+    Learn about the full model architecture
+  </Card>
+  
+  <Card title="RMSNorm" icon="waveform" href="/architecture/rmsnorm">
+    Efficient normalization that pairs well with SwiGLU
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Configure FFN hidden size and other hyperparameters
+  </Card>
+</CardGroup>

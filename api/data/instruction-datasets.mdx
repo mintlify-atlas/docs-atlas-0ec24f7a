@@ -1,0 +1,388 @@
+---
+title: Instruction datasets
+description: Load and format datasets for supervised instruction tuning
+---
+
+The `instruction_datasets` module provides utilities for loading and formatting instruction-following datasets like Alpaca and OpenAssistant for supervised fine-tuning (SFT).
+
+## InstructionDataset
+
+PyTorch Dataset class for instruction-tuning that tokenizes examples with response-only masking.
+
+```python
+from modern_llm.data.instruction_datasets import (
+    InstructionDataset,
+    InstructionDatasetConfig,
+)
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=2048,
+    split="train",
+)
+
+dataset = InstructionDataset(config, tokenizer)
+```
+
+<ParamField path="config" type="InstructionDatasetConfig" required>
+  Configuration object specifying dataset parameters
+</ParamField>
+
+<ParamField path="tokenizer" type="PreTrainedTokenizerBase" required>
+  Tokenizer for processing instruction examples. If `pad_token_id` is None, will use `eos_token` as padding.
+</ParamField>
+
+### Methods
+
+#### `__len__`
+
+Returns the number of examples in the dataset.
+
+#### `__getitem__`
+
+Returns a single tokenized example as a dictionary with:
+- `input_ids`: Token IDs for the full instruction + response
+- `attention_mask`: Attention mask (1 for real tokens, 0 for padding)
+- `labels`: Target labels with prompt tokens masked as -100
+
+### Response-only masking
+
+The dataset automatically masks prompt tokens in the labels so only the response portion contributes to the loss during training. This is achieved by:
+1. Finding the `### Response:` marker in the formatted text
+2. Setting all label tokens before the response to -100
+3. Setting all padding tokens to -100
+
+### Supported formats
+
+The dataset automatically detects and handles multiple formats:
+
+**Alpaca format**: `instruction`, `input`, `output` fields
+```json
+{
+  "instruction": "Summarize the following article",
+  "input": "Long article text...",
+  "output": "Article summary"
+}
+```
+
+**OpenAssistant format**: `text` field with conversation
+```json
+{
+  "text": "Human: Hello\n\nAssistant: Hi there!"
+}
+```
+
+**HH-RLHF format**: `chosen` field for SFT
+```json
+{
+  "chosen": "Human: Question\n\nAssistant: Answer"
+}
+```
+
+## load_instruction_dataset
+
+Factory function for creating an InstructionDataset.
+
+```python
+from modern_llm.data.instruction_datasets import (
+    load_instruction_dataset,
+    InstructionDatasetConfig,
+)
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=2048,
+    num_examples=1000,  # Limit to 1000 examples for debugging
+)
+
+dataset = load_instruction_dataset(config, tokenizer)
+```
+
+<ParamField path="config" type="InstructionDatasetConfig" required>
+  Configuration object specifying dataset parameters
+</ParamField>
+
+<ParamField path="tokenizer" type="PreTrainedTokenizerBase" required>
+  Tokenizer with pad_token defined (or will use eos_token)
+</ParamField>
+
+<ResponseField name="dataset" type="InstructionDataset">
+  InstructionDataset instance with tokenized examples ready for training
+</ResponseField>
+
+## InstructionDatasetConfig
+
+Configuration dataclass for instruction-tuning datasets.
+
+```python
+from modern_llm.data.instruction_datasets import InstructionDatasetConfig
+
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=2048,
+    split="train",
+    num_examples=None,      # Load all examples
+    include_input=True,     # Include the input field
+)
+```
+
+<ParamField path="dataset_name" type="str" required>
+  Hugging Face dataset name (e.g., "tatsu-lab/alpaca", "OpenAssistant/oasst1")
+</ParamField>
+
+<ParamField path="max_length" type="int" default="1024">
+  Maximum sequence length for tokenization. Must be positive.
+</ParamField>
+
+<ParamField path="split" type="str" default="train">
+  Dataset split to load ("train", "validation", or "test")
+</ParamField>
+
+<ParamField path="num_examples" type="Optional[int]" default="None">
+  Limit number of examples for debugging. None loads all examples.
+</ParamField>
+
+<ParamField path="include_input" type="bool" default="True">
+  Whether to include the "input" field in Alpaca-style datasets. Set to False to use only instruction and output.
+</ParamField>
+
+### Validation
+
+The config validates on initialization:
+- `dataset_name` must be non-empty
+- `max_length` must be positive
+
+## format_instruction
+
+Format an instruction example using the standard template.
+
+```python
+from modern_llm.data.instruction_datasets import format_instruction
+
+# With input field
+formatted = format_instruction(
+    instruction="Translate this to French",
+    input_text="Hello, how are you?",
+    output="Bonjour, comment allez-vous?",
+)
+
+# Without input field (empty or whitespace-only)
+formatted = format_instruction(
+    instruction="Write a haiku about coding",
+    input_text="",
+    output="Code flows like water\nBugs emerge from the shadows\nDebug until dawn",
+)
+```
+
+<ParamField path="instruction" type="str" required>
+  The instruction text (will be stripped)
+</ParamField>
+
+<ParamField path="input_text" type="str" required>
+  The input context text. If empty or whitespace-only, the "Input:" section is omitted.
+</ParamField>
+
+<ParamField path="output" type="str" required>
+  The expected response (will be stripped)
+</ParamField>
+
+<ResponseField name="formatted" type="str">
+  Formatted instruction string with clear section delimiters
+</ResponseField>
+
+### Template format
+
+With input:
+```
+### Instruction:
+{instruction}
+
+### Input:
+{input}
+
+### Response:
+{output}
+```
+
+Without input:
+```
+### Instruction:
+{instruction}
+
+### Response:
+{output}
+```
+
+## create_instruction_dataloader
+
+Create a DataLoader with proper collation for instruction datasets.
+
+```python
+from modern_llm.data.instruction_datasets import (
+    load_instruction_dataset,
+    create_instruction_dataloader,
+    InstructionDatasetConfig,
+)
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=2048,
+)
+
+dataset = load_instruction_dataset(config, tokenizer)
+
+train_loader = create_instruction_dataloader(
+    dataset=dataset,
+    batch_size=4,
+    shuffle=True,
+    num_workers=4,
+)
+
+for batch in train_loader:
+    # batch contains input_ids, attention_mask, labels
+    print(batch["input_ids"].shape)  # [batch_size, max_length]
+    break
+```
+
+<ParamField path="dataset" type="InstructionDataset" required>
+  The instruction dataset to load from
+</ParamField>
+
+<ParamField path="batch_size" type="int" required>
+  Number of examples per batch
+</ParamField>
+
+<ParamField path="shuffle" type="bool" default="True">
+  Whether to shuffle the dataset
+</ParamField>
+
+<ParamField path="num_workers" type="int" default="0">
+  Number of worker processes for data loading
+</ParamField>
+
+<ResponseField name="dataloader" type="DataLoader">
+  PyTorch DataLoader with proper collation and pin_memory enabled
+</ResponseField>
+
+## Examples
+
+### Load Alpaca dataset for SFT
+
+```python
+from modern_llm.data.instruction_datasets import (
+    load_instruction_dataset,
+    InstructionDatasetConfig,
+)
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+tokenizer.pad_token = tokenizer.eos_token
+
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=2048,
+    split="train",
+)
+
+train_dataset = load_instruction_dataset(config, tokenizer)
+print(f"Loaded {len(train_dataset)} instruction examples")
+
+# Inspect an example
+example = train_dataset[0]
+print(f"Input shape: {example['input_ids'].shape}")
+print(f"Labels shape: {example['labels'].shape}")
+```
+
+### Debug with limited examples
+
+```python
+# Load only 100 examples for quick iteration
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=1024,
+    num_examples=100,
+)
+
+dataset = load_instruction_dataset(config, tokenizer)
+```
+
+### Instruction-only format (no input field)
+
+```python
+# Exclude the input field from Alpaca examples
+config = InstructionDatasetConfig(
+    dataset_name="tatsu-lab/alpaca",
+    max_length=2048,
+    include_input=False,  # Only use instruction and output
+)
+
+dataset = load_instruction_dataset(config, tokenizer)
+```
+
+### Load OpenAssistant conversations
+
+```python
+config = InstructionDatasetConfig(
+    dataset_name="OpenAssistant/oasst1",
+    max_length=2048,
+    split="train",
+)
+
+dataset = load_instruction_dataset(config, tokenizer)
+```
+
+### Create DataLoader for training
+
+```python
+from modern_llm.data.instruction_datasets import create_instruction_dataloader
+
+train_loader = create_instruction_dataloader(
+    dataset=train_dataset,
+    batch_size=8,
+    shuffle=True,
+    num_workers=4,
+)
+
+for batch in train_loader:
+    input_ids = batch["input_ids"]        # [8, 2048]
+    attention_mask = batch["attention_mask"]  # [8, 2048]
+    labels = batch["labels"]              # [8, 2048] with prompt masked
+    
+    # Train your model
+    outputs = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        labels=labels,
+    )
+    loss = outputs.loss
+    break
+```
+
+### Custom instruction formatting
+
+```python
+from modern_llm.data.instruction_datasets import format_instruction
+
+# Format a custom example
+formatted = format_instruction(
+    instruction="Explain quantum computing",
+    input_text="",  # No additional context
+    output="Quantum computing uses quantum mechanics...",
+)
+
+print(formatted)
+# ### Instruction:
+# Explain quantum computing
+#
+# ### Response:
+# Quantum computing uses quantum mechanics...
+```

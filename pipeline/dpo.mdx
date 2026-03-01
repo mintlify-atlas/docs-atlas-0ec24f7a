@@ -1,0 +1,400 @@
+---
+title: Direct preference optimization (DPO)
+description: Align models using preference data without a reward model
+---
+
+Direct Preference Optimization (DPO) is the third stage of the Modern LLM pipeline. It takes a supervised fine-tuned model and further aligns it using human preference data, teaching the model to prefer chosen responses over rejected ones.
+
+## Overview
+
+DPO (Rafailov et al., 2023) is an alternative to RLHF that directly optimizes the model to satisfy human preferences without requiring:
+- A separate reward model
+- Reinforcement learning (PPO)
+- Complex training instability issues
+
+The key insight: instead of using RL to maximize a learned reward, DPO directly optimizes the policy to increase the likelihood of preferred responses and decrease the likelihood of rejected ones.
+
+### DPO objective
+
+Given pairs (x, y_w, y_l) where y_w is the preferred (chosen) response and y_l is the rejected response to prompt x:
+
+```
+L_DPO = -log σ(β * log(π_θ(y_w|x) / π_ref(y_w|x)) - β * log(π_θ(y_l|x) / π_ref(y_l|x)))
+```
+
+Where:
+- π_θ = fine-tuning policy (your model)
+- π_ref = reference policy (frozen SFT model)
+- β = temperature parameter (default: 0.1)
+- σ = sigmoid function
+
+<Note>
+Modern LLM uses an **implicit reference** approach: we compute reference log-probs with `torch.no_grad()` from the same model before computing gradients. This saves memory by not storing a separate reference model.
+</Note>
+
+### Supported datasets
+
+| Dataset | Pairs | Domain | Description |
+|---------|-------|--------|-------------|
+| **Anthropic/hh-rlhf** | 161K | General helpfulness | Human preference data from Anthropic's RLHF work |
+| **OpenAssistant/oasst1** | 88K | Multi-turn dialog | Community-generated preference conversations |
+| **stanfordnlp/SHP** | 385K | Reddit comments | Social preferences from Reddit upvotes |
+
+## Usage
+
+### Using the pipeline runner (recommended)
+
+<CodeGroup>
+```bash From existing SFT checkpoint
+python scripts/run_pipeline.py --config local --stage dpo \
+    --checkpoint experiments/runs/local-full/sft_final.pt
+```
+
+```bash Auto-detect checkpoint
+# Automatically finds latest SFT checkpoint
+python scripts/run_pipeline.py --config local --stage dpo
+```
+
+```bash Full pipeline (pretrain → SFT → DPO)
+python scripts/run_pipeline.py --config local --stage all
+```
+
+```bash Custom beta parameter
+python scripts/run_pipeline.py --config local --stage dpo \
+    --checkpoint sft.pt \
+    --dpo-steps 1500
+```
+</CodeGroup>
+
+### Direct script usage
+
+```bash
+python scripts/dpo.py \
+    --sft-checkpoint experiments/runs/local-full/sft_final.pt \
+    --config local \
+    --beta 0.1
+```
+
+## Configuration
+
+### Config presets
+
+<CodeGroup>
+```python local-smoke
+# Quick test (~2 minutes)
+dpo_max_steps: 50
+dpo_lr: 5e-6
+dpo_batch_size: 16
+dpo_micro_batch_size: 1
+dpo_beta: 0.1
+dpo_dataset: "Anthropic/hh-rlhf"
+```
+
+```python local
+# RTX 3060, 1-2 hours
+dpo_max_steps: 2000
+dpo_lr: 5e-6
+dpo_batch_size: 16
+dpo_micro_batch_size: 1
+dpo_beta: 0.1
+dpo_dataset: "Anthropic/hh-rlhf"
+```
+
+```python gpu
+# A100/H100, 2 hours
+dpo_max_steps: 3000
+dpo_lr: 5e-6
+dpo_batch_size: 16
+dpo_micro_batch_size: 1
+dpo_beta: 0.1
+dpo_dataset: "Anthropic/hh-rlhf"
+```
+</CodeGroup>
+
+<Note>
+DPO learning rates are **even lower** than SFT (5e-6 vs 1e-5) because we're making fine adjustments to an already well-tuned model.
+</Note>
+
+### Hyperparameter tuning
+
+**Beta (β)** - Temperature parameter
+- Default: `0.1` balances preference strength and diversity
+- **Higher β** (0.2-0.5): Stronger preference signal, more aggressive alignment
+- **Lower β** (0.01-0.05): Gentler updates, preserves more SFT behavior
+- Range: `0.01` to `0.5`
+
+**Learning rate** (`dpo_lr`)
+- Default: `5e-6` provides stable updates
+- Too high: Model diverges from SFT behavior
+- Too low: Minimal preference learning
+- Range: `1e-6` to `1e-5`
+
+**Training steps** (`dpo_max_steps`)
+- Default: `2000` for local, `3000` for GPU
+- Monitor accuracy: should reach 60-70% preference accuracy
+- Stop if accuracy plateaus or starts decreasing
+
+**Batch size** (`dpo_batch_size`)
+- Default: `16` (smaller than SFT due to memory overhead)
+- Each example requires 2 forward passes (chosen + rejected)
+- Prefer gradient accumulation over larger micro batches
+
+## Training details
+
+### Optimization
+
+DPO training uses:
+- **Optimizer**: AdamW with β₁=0.9, β₂=0.95
+- **Learning rate schedule**: Cosine annealing from `dpo_lr` to 0
+- **Gradient accumulation**: Automatic (batch_size / micro_batch_size)
+- **Mixed precision**: BF16 on supported GPUs
+- **Weight decay**: 0.0 (disabled to preserve SFT model)
+
+### Training loop
+
+For each preference pair:
+
+<Steps>
+  <Step title="Compute reference log-probs">
+    Forward pass with `torch.no_grad()` to get π_ref(y_w|x) and π_ref(y_l|x). These serve as the implicit reference policy.
+  </Step>
+  
+  <Step title="Compute policy log-probs">
+    Forward pass with gradients enabled to get π_θ(y_w|x) (rejected response is reused from reference).
+  </Step>
+  
+  <Step title="Compute DPO loss">
+    Calculate the DPO objective using the log-probability ratios and beta parameter.
+  </Step>
+  
+  <Step title="Backward and update">
+    Backpropagate loss and update model parameters with gradient accumulation.
+  </Step>
+</Steps>
+
+### Loss components
+
+The DPO loss has two terms:
+
+1. **Preference term**: Pushes chosen responses to be more likely
+2. **KL penalty** (implicit): Prevents model from drifting too far from reference
+
+The β parameter controls the tradeoff between satisfying preferences and staying close to the SFT model.
+
+### Metrics
+
+Key metrics logged during training:
+
+**Loss** - DPO objective value
+- Should decrease from ~0.7 to ~0.3-0.5
+- Sudden increases indicate instability (reduce LR or β)
+
+**Accuracy** - Preference satisfaction rate
+- % of examples where p(chosen) > p(rejected)
+- Target: 60-70% (random baseline is 50%)
+- Above 80% may indicate overfitting
+
+## Checkpoints
+
+DPO saves checkpoints at regular intervals:
+
+- **Regular checkpoints**: Every `save_every` steps (default: 2000)
+  - Format: `<run_name>-dpo_step{N}.pt`
+  
+- **Final checkpoint**: At end of training
+  - Format: `<run_name>-dpo_final.pt`
+  - This is your final aligned model
+
+Checkpoint structure:
+
+```python
+checkpoint = {
+    'model_state': OrderedDict(...),      # DPO-aligned weights
+    'optimizer_state': {...},             # Optimizer state
+    'config': {...},                      # Model config (unchanged)
+    'step': 2000,                         # DPO step counter
+    'run_name': 'local-full-dpo',
+}
+```
+
+<Warning>
+DPO checkpoints are **standalone models**, not deltas. You don't need the SFT checkpoint to use a DPO checkpoint.
+</Warning>
+
+## Monitoring
+
+DPO training progress:
+
+```
+Loading SFT model from experiments/runs/local-full/sft_final.pt
+Model: 117.2M parameters
+Loading preference dataset: Anthropic/hh-rlhf
+Preference pairs: 160800
+Starting DPO for 2000 steps (beta=0.1)
+
+DPO Training: 100%|████████| 2000/2000 [1:45:20<00:00, loss=0.4523, acc=65.23%]
+step=500 loss=0.6234 accuracy=57.89% lr=4.755e-06
+step=1000 loss=0.5123 accuracy=62.45% lr=4.045e-06
+step=1500 loss=0.4678 accuracy=64.12% lr=2.755e-06
+step=2000 loss=0.4456 accuracy=65.67% lr=7.725e-07
+
+DPO complete. Final checkpoint: experiments/runs/local-full/dpo_final.pt
+```
+
+### Quality indicators
+
+**Good DPO training:**
+- Accuracy improves steadily to 60-70%
+- Loss decreases smoothly
+- No sudden spikes or divergence
+
+**Signs of overfitting:**
+- Accuracy > 80%
+- Model becomes conservative or repetitive
+- Solution: Reduce steps, increase β, or add more data
+
+**Signs of underfitting:**
+- Accuracy stays near 50-55%
+- Minimal improvement over SFT
+- Solution: Increase steps, tune β, check data quality
+
+**Training instability:**
+- Loss spikes or NaN
+- Accuracy fluctuates wildly
+- Solution: Reduce LR (to 1e-6), lower β, or check for data issues
+
+## Implementation details
+
+DPO implementation is located at:
+- `src/modern_llm/training/train_dpo.py` - Main DPO training
+- `src/modern_llm/alignment/dpo_loss.py` - DPO loss function
+- `scripts/dpo.py` - CLI wrapper
+- `scripts/run_pipeline.py:run_dpo()` - Pipeline integration
+
+Key functions:
+
+**run_dpo(sft_checkpoint, train_config, dpo_config, preference_config, tokenizer_name)**
+
+`src/modern_llm/training/train_dpo.py:355-416`
+
+Main DPO entrypoint:
+1. Load SFT model from checkpoint
+2. Load preference dataset pairs
+3. Setup DPO trainer with β parameter
+4. Run training loop with accuracy tracking
+5. Save final DPO checkpoint
+
+**dpo_loss(chosen_logprobs, rejected_logprobs, beta)**
+
+`src/modern_llm/alignment/dpo_loss.py`
+
+Computes DPO objective:
+```python
+def dpo_loss(policy_chosen_logps, policy_rejected_logps, beta=0.1):
+    log_ratio = policy_chosen_logps - policy_rejected_logps
+    return -F.logsigmoid(beta * log_ratio).mean()
+```
+
+**DPOTrainer._training_step()**
+
+`src/modern_llm/training/train_dpo.py:236-313`
+
+Executes one DPO training step:
+1. Compute reference log-probs (no grad)
+2. Compute policy log-probs for chosen (with grad)
+3. Calculate DPO loss
+4. Backward and accumulate gradients
+5. Update on full batch
+
+## Performance tips
+
+<AccordionGroup>
+  <Accordion title="Reduce memory usage">
+    - Use micro_batch_size=1 (DPO needs 2x forward passes per example)
+    - Enable gradient checkpointing
+    - Use implicit reference (default) instead of storing π_ref
+    - Reduce max_seq_len to 512
+  </Accordion>
+
+  <Accordion title="Speed up training">
+    - Sample large preference datasets (e.g., hh-rlhf:50000)
+    - Increase micro_batch_size if GPU memory allows (2-4)
+    - Use shorter sequences
+    - Enable bf16 mixed precision
+  </Accordion>
+
+  <Accordion title="Improve alignment quality">
+    - Tune beta (try 0.05, 0.1, 0.2)
+    - Train longer (3000-5000 steps)
+    - Use multiple preference datasets
+    - Start with high-quality SFT model
+  </Accordion>
+
+  <Accordion title="Prevent model degradation">
+    - Keep learning rate low (5e-6 or lower)
+    - Use lower beta (0.05-0.1) for gentler updates
+    - Monitor accuracy - stop if > 75%
+    - Compare generations to SFT baseline
+  </Accordion>
+</AccordionGroup>
+
+## Evaluation
+
+After DPO, evaluate alignment quality:
+
+### Preference accuracy
+
+Measure how often the model prefers chosen over rejected responses:
+
+```bash
+python scripts/evaluate_pipeline.py \
+    --checkpoint experiments/runs/local-full/dpo_final.pt \
+    --stage dpo \
+    --eval-split test
+```
+
+Target: 60-70% on held-out test set.
+
+### Qualitative comparison
+
+Compare DPO vs SFT on sample prompts:
+
+```python
+# Load both models
+sft_model = load_model("sft_final.pt")
+dpo_model = load_model("dpo_final.pt")
+
+prompt = "How can I build a bomb?"
+print("SFT:", sft_model.generate(prompt))
+print("DPO:", dpo_model.generate(prompt))
+
+# DPO should better refuse harmful requests
+```
+
+### A/B testing
+
+Present both model outputs to humans and measure preference:
+- Which response is more helpful?
+- Which is more harmless?
+- Which follows instructions better?
+
+See the [evaluation guide](/essentials/evaluation) for details.
+
+## Next steps
+
+After DPO completes, you have a fully aligned language model! Optional next steps:
+
+1. **Train a verifier** to score response quality:
+   ```bash
+   python scripts/run_pipeline.py --config local --stage verifier
+   ```
+
+2. **Run evaluations** on standard benchmarks
+
+3. **Deploy the model** for inference
+
+4. **Iterate**: Collect more preference data and run additional DPO
+
+<Card title="Verifier training" icon="check-circle" href="/pipeline/verifier">
+  Train a model to score answer correctness for math and QA tasks
+</Card>

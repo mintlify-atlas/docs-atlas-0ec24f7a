@@ -1,0 +1,504 @@
+---
+title: Evaluation
+description: Evaluate models on downstream tasks with metrics, benchmarking, and error analysis
+---
+
+Modern LLM includes comprehensive evaluation tools for sentiment classification (SST-2), math reasoning (GSM8K), and custom tasks. Evaluation supports both scratch-trained models and HuggingFace baselines.
+
+## Quick start
+
+Evaluate a trained model on all tasks:
+
+```bash
+# Evaluate single checkpoint
+python scripts/evaluation/evaluate_tasks.py \
+  --checkpoint experiments/my-run/final_checkpoint.pt \
+  --max-sst2 500 \
+  --max-gsm8k 100
+
+# Evaluate with baseline comparison
+python scripts/evaluation/evaluate_tasks.py \
+  --checkpoint experiments/my-run/final_checkpoint.pt \
+  --include-baselines
+
+# Evaluate all pipeline stages
+python scripts/evaluation/evaluate_tasks.py \
+  --stage-checkpoints experiments/runs/gpu-full/
+```
+
+## SST-2 sentiment classification
+
+SST-2 evaluates binary sentiment classification using few-shot prompting.
+
+### Running SST-2 evaluation
+
+<Tabs>
+  <Tab title="Scratch model">
+    ```bash
+    python scripts/evaluation/eval_sst2.py \
+      --checkpoint experiments/my-model/checkpoint.pt \
+      --max-samples 500 \
+      --output experiments/results/sst2_results.json
+    ```
+  </Tab>
+  <Tab title="HuggingFace model">
+    ```bash
+    python scripts/evaluation/eval_sst2.py \
+      --hf-model gpt2 \
+      --max-samples 500 \
+      --output experiments/results/sst2_gpt2.json
+    ```
+  </Tab>
+</Tabs>
+
+### SST-2 from Python
+
+```python
+import torch
+from transformers import AutoTokenizer
+from scripts.evaluation.eval_sst2 import (
+    load_scratch_model,
+    evaluate_sst2,
+)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Load model
+model, tokenizer = load_scratch_model(
+    "experiments/my-run/checkpoint.pt",
+    device,
+)
+
+# Evaluate
+results = evaluate_sst2(
+    model=model,
+    tokenizer=tokenizer,
+    device=device,
+    max_samples=500,
+    is_hf_model=False,
+)
+
+print(f"SST-2 Accuracy: {results['accuracy']:.2%}")
+print(f"Correct: {results['correct']}/{results['total']}")
+```
+
+### Few-shot prompting
+
+SST-2 evaluation uses a question-format prompt with examples:
+
+```python
+FEW_SHOT_PROMPT = """Is this review positive or negative?
+
+Review: "I love this movie, it's fantastic!"
+Answer: positive
+
+Review: "This was terrible and boring."
+Answer: negative
+
+Review: "A wonderful experience from start to finish."
+Answer: positive
+
+Review: "{text}"
+Answer:"""
+```
+
+The model's next-token logits for "positive" vs "negative" determine the prediction.
+
+<Accordion title="Why few-shot prompting?">
+  Few-shot prompting achieves ~70% accuracy vs ~50% for simple prompts on GPT-2 scale models. The question format ("Is this positive or negative?") helps the model understand the task structure.
+
+  The `predict_sentiment()` function extracts logits for the "positive" and "negative" tokens and compares them:
+
+  ```python
+  # Get logits for last position
+  next_logits = logits[0, -1, :]
+
+  # Compare positive vs negative token logits
+  pos_tokens = tokenizer.encode(" positive", add_special_tokens=False)
+  neg_tokens = tokenizer.encode(" negative", add_special_tokens=False)
+
+  pos_prob = next_logits[pos_tokens[0]].item()
+  neg_prob = next_logits[neg_tokens[0]].item()
+
+  return "positive" if pos_prob > neg_prob else "negative"
+  ```
+</Accordion>
+
+## GSM8K math reasoning
+
+GSM8K evaluates grade-school math problem solving with chain-of-thought reasoning and optional verifier reranking.
+
+### Running GSM8K evaluation
+
+<Tabs>
+  <Tab title="Without verifier">
+    ```bash
+    python scripts/evaluation/eval_gsm8k.py \
+      --checkpoint experiments/my-model/checkpoint.pt \
+      --max-samples 100 \
+      --n-samples 1
+    ```
+  </Tab>
+  <Tab title="With verifier">
+    ```bash
+    python scripts/evaluation/eval_gsm8k.py \
+      --checkpoint experiments/my-model/checkpoint.pt \
+      --verifier experiments/verifier/checkpoint.pt \
+      --max-samples 100 \
+      --n-samples 8
+    ```
+  </Tab>
+</Tabs>
+
+### GSM8K from Python
+
+```python
+import torch
+from scripts.evaluation.eval_gsm8k import (
+    load_scratch_model,
+    load_verifier,
+    evaluate_gsm8k,
+)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Load model and optional verifier
+model, tokenizer = load_scratch_model(
+    "experiments/sft/checkpoint.pt",
+    device,
+)
+
+verifier = None
+# verifier = load_verifier("experiments/verifier/checkpoint.pt", device)
+
+# Evaluate
+results = evaluate_gsm8k(
+    model=model,
+    tokenizer=tokenizer,
+    device=device,
+    verifier=verifier,
+    max_samples=100,
+    n_samples_per_q=8 if verifier else 1,
+)
+
+print(f"Exact Match: {results['exact_match_no_verifier']:.2%}")
+if verifier:
+    print(f"EM with verifier: {results['exact_match_with_verifier']:.2%}")
+    print(f"Improvement: {results['verifier_improvement']:+.2%}")
+```
+
+### Answer extraction
+
+GSM8K uses multiple strategies to extract numeric answers:
+
+```python
+def extract_answer(text: str) -> Optional[str]:
+    """Extract final numeric answer from model output."""
+    # Look for #### marker (GSM8K format)
+    match = re.search(r"####\s*([\d,.-]+)", text)
+    if match:
+        return match.group(1).replace(",", "")
+    
+    # Look for "the answer is X" pattern
+    match = re.search(r"answer is\s*([\d,.-]+)", text, re.IGNORECASE)
+    if match:
+        return match.group(1).replace(",", "")
+    
+    # Fall back to last number in text
+    numbers = re.findall(r"[\d,]+\.?\d*", text)
+    if numbers:
+        return numbers[-1].replace(",", "")
+    
+    return None
+```
+
+### Error taxonomy
+
+GSM8K evaluation classifies errors into three categories:
+
+<Accordion title="Error types">
+  1. **Extraction errors**: The correct answer appears in the output but wasn't extracted
+     ```python
+     if gold_norm in model_output:
+         return "extraction"
+     ```
+
+  2. **Arithmetic errors**: The answer is close (within 20%) to the correct value
+     ```python
+     pred_num = float(pred_norm)
+     gold_num = float(gold_norm)
+     if abs(pred_num - gold_num) < abs(gold_num) * 0.2:
+         return "arithmetic"
+     ```
+
+  3. **Reasoning errors**: Wrong approach or logic (default category)
+
+  The error taxonomy helps identify what models struggle with:
+  ```json
+  {
+    "error_taxonomy": {
+      "extraction": 12,
+      "arithmetic": 8,
+      "reasoning": 35
+    }
+  }
+  ```
+</Accordion>
+
+### Verifier reranking
+
+When a verifier is provided, multiple solutions are generated and reranked:
+
+```python
+# Generate multiple solutions
+solutions = generate_solutions(
+    model, tokenizer, question, device, n_samples=8
+)
+
+# Score with verifier
+scores = []
+for sol in solutions:
+    score = verifier.score(
+        tokenizer(question + sol, return_tensors="pt")["input_ids"].to(device)
+    )
+    scores.append((score, sol))
+
+# Select highest-scoring solution
+best_sol = max(scores, key=lambda x: x[0])[1]
+best_pred = extract_answer(best_sol)
+```
+
+<Note>
+  Verifier reranking can improve accuracy by selecting the most promising solution from multiple generations. The improvement varies based on verifier quality.
+</Note>
+
+## Unified evaluation
+
+The `evaluate_tasks.py` script evaluates models on all tasks and generates comparison tables.
+
+### Comparing pipeline stages
+
+```bash
+python scripts/evaluation/evaluate_tasks.py \
+  --stage-checkpoints experiments/runs/gpu-full/ \
+  --output-dir experiments/results/
+```
+
+This finds checkpoints for pretrain, SFT, and DPO stages and evaluates each:
+
+```
+Found checkpoints:
+  pretrain: experiments/runs/gpu-full/gpu-full-pretrain/checkpoint_final.pt
+  sft: experiments/runs/gpu-full/gpu-full-sft/checkpoint_final.pt
+  dpo: experiments/runs/gpu-full/gpu-full-dpo/checkpoint_final.pt
+
+Evaluating stage: pretrain
+  Evaluating SST-2... 65.0% accuracy
+  Evaluating GSM8K... 8.5% EM
+
+Evaluating stage: sft
+  Evaluating SST-2... 72.5% accuracy
+  Evaluating GSM8K... 15.2% EM
+
+Evaluating stage: dpo
+  Evaluating SST-2... 75.0% accuracy
+  Evaluating GSM8K... 16.8% EM
+```
+
+### Generated outputs
+
+The evaluation script generates three files:
+
+<Tabs>
+  <Tab title="task_metrics.json">
+    ```json
+    [
+      {
+        "model": "gpu-full-pretrain",
+        "stage": "pretrain",
+        "is_hf_baseline": false,
+        "sst2_accuracy": 0.650,
+        "gsm8k_em": 0.085,
+        "gsm8k_errors": {
+          "extraction": 5,
+          "arithmetic": 12,
+          "reasoning": 68
+        }
+      },
+      {
+        "model": "gpu-full-sft",
+        "stage": "sft",
+        "sst2_accuracy": 0.725,
+        "gsm8k_em": 0.152
+      },
+      ...
+    ]
+    ```
+  </Tab>
+  <Tab title="baseline_comparison.md">
+    ```markdown
+    # Model Comparison
+
+    | Model | SST-2 Acc | GSM8K EM | Notes |
+    |-------|-----------|----------|-------|
+    | gpt2 | 68.0% | N/A | HF Baseline |
+    | distilgpt2 | 62.5% | N/A | HF Baseline |
+    | gpu-full-pretrain | 65.0% | 8.5% | pretrain |
+    | gpu-full-sft | 72.5% | 15.2% | sft |
+    | gpu-full-dpo | 75.0% | 16.8% | dpo |
+    ```
+  </Tab>
+  <Tab title="stage_gains.md">
+    ```markdown
+    # Stage-wise Gains
+
+    | Stage | SST-2 Acc | GSM8K EM | Δ SST-2 | Δ GSM8K |
+    |-------|-----------|----------|---------|----------|
+    | PRETRAIN | 65.0% | 8.5% | +0.0% | +0.0% |
+    | SFT | 72.5% | 15.2% | +7.5% | +6.7% |
+    | DPO | 75.0% | 16.8% | +2.5% | +1.6% |
+    ```
+  </Tab>
+</Tabs>
+
+### Including baselines
+
+```bash
+python scripts/evaluation/evaluate_tasks.py \
+  --checkpoint experiments/my-model/checkpoint.pt \
+  --include-baselines
+```
+
+This evaluates GPT-2 and DistilGPT-2 for comparison:
+
+```
+Evaluating HF baseline: gpt2
+  SST-2 Accuracy: 68.0%
+
+Evaluating HF baseline: distilgpt2
+  SST-2 Accuracy: 62.5%
+
+Evaluating: experiments/my-model/checkpoint.pt
+  SST-2 Accuracy: 72.5%
+  GSM8K EM: 15.2%
+```
+
+## Custom evaluation
+
+Create custom evaluation scripts using the same loading utilities:
+
+```python
+import torch
+from pathlib import Path
+from scripts.evaluation.eval_sst2 import load_scratch_model
+
+def evaluate_custom_task(model, tokenizer, device):
+    """Evaluate on custom task."""
+    # Load your dataset
+    dataset = ...
+    
+    correct = 0
+    total = 0
+    
+    for example in dataset:
+        prompt = format_prompt(example)
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        
+        with torch.no_grad():
+            outputs = model(inputs["input_ids"])
+            prediction = process_output(outputs)
+        
+        if prediction == example["label"]:
+            correct += 1
+        total += 1
+    
+    return {"accuracy": correct / total}
+
+# Load model
+model, tokenizer = load_scratch_model("checkpoint.pt", "cuda")
+
+# Evaluate
+results = evaluate_custom_task(model, tokenizer, "cuda")
+print(f"Custom task accuracy: {results['accuracy']:.2%}")
+```
+
+## Complete example
+
+Full evaluation pipeline:
+
+```python
+import torch
+from pathlib import Path
+from scripts.evaluation.eval_sst2 import (
+    load_scratch_model,
+    evaluate_sst2,
+)
+from scripts.evaluation.eval_gsm8k import (
+    evaluate_gsm8k,
+    load_verifier,
+)
+
+def evaluate_model_comprehensive(
+    checkpoint_path: str,
+    verifier_path: str = None,
+    output_dir: str = "experiments/results",
+):
+    """Run all evaluations for a model."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Load model
+    print(f"Loading model: {checkpoint_path}")
+    model, tokenizer = load_scratch_model(checkpoint_path, device)
+    
+    # SST-2
+    print("Evaluating SST-2...")
+    sst2_results = evaluate_sst2(
+        model, tokenizer, device,
+        max_samples=500,
+        is_hf_model=False,
+    )
+    print(f"  SST-2 Accuracy: {sst2_results['accuracy']:.2%}")
+    
+    # GSM8K
+    print("Evaluating GSM8K...")
+    verifier = None
+    if verifier_path:
+        verifier = load_verifier(verifier_path, device)
+    
+    gsm8k_results = evaluate_gsm8k(
+        model, tokenizer, device,
+        verifier=verifier,
+        max_samples=100,
+        n_samples_per_q=8 if verifier else 1,
+    )
+    print(f"  GSM8K EM: {gsm8k_results['exact_match_no_verifier']:.2%}")
+    
+    # Combine results
+    results = {
+        "checkpoint": checkpoint_path,
+        "sst2": sst2_results,
+        "gsm8k": gsm8k_results,
+    }
+    
+    # Save
+    import json
+    with open(output_dir / "evaluation_results.json", "w") as f:
+        json.dump(results, f, indent=2)
+    
+    print(f"\nResults saved to {output_dir}/evaluation_results.json")
+    return results
+
+# Run evaluation
+evaluate_model_comprehensive(
+    checkpoint_path="experiments/my-run/final_checkpoint.pt",
+    verifier_path="experiments/verifier/checkpoint.pt",
+)
+```
+
+## See also
+
+- [Checkpoints](/guides/checkpoints) - Load model checkpoints for evaluation
+- [Configuration](/guides/configuration) - Configure evaluation runs
+- [Training Scripts](/api/training/train-lm) - Training pipelines that generate checkpoints

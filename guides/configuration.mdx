@@ -1,0 +1,482 @@
+---
+title: Configuration
+description: Complete guide to configuring Modern LLM models, training, pipelines, and hardware
+---
+
+Modern LLM provides a flexible configuration system with strict validation and preset configurations for common scenarios. All configurations are type-safe dataclasses with comprehensive validation.
+
+## Model configuration
+
+The `ModernLLMConfig` dataclass defines your model architecture with support for modern features like RoPE, GQA, MoE, and attention sinks.
+
+### Basic model setup
+
+```python
+from modern_llm.config import ModernLLMConfig
+
+# Create a small model for experimentation
+config = ModernLLMConfig(
+    vocab_size=50257,
+    d_model=768,
+    n_layers=12,
+    n_heads=12,
+    ffn_hidden_size=3072,
+    max_seq_len=1024,
+    dropout=0.1,
+)
+```
+
+### Advanced features
+
+<Tabs>
+  <Tab title="Rotary embeddings">
+    ```python
+    config = ModernLLMConfig(
+        vocab_size=50257,
+        d_model=768,
+        n_layers=12,
+        n_heads=12,
+        ffn_hidden_size=3072,
+        max_seq_len=1024,
+        use_rope=True,
+        rope_theta=10000.0,
+        rope_scaling=2.0,  # Optional: scale for longer sequences
+    )
+    ```
+  </Tab>
+  <Tab title="Grouped query attention">
+    ```python
+    config = ModernLLMConfig(
+        vocab_size=50257,
+        d_model=1024,
+        n_layers=12,
+        n_heads=16,
+        ffn_hidden_size=4096,
+        max_seq_len=2048,
+        use_gqa=True,
+        gqa_groups=4,  # Must divide n_heads evenly
+    )
+    ```
+  </Tab>
+  <Tab title="Mixture of experts">
+    ```python
+    from modern_llm.config import ModernLLMConfig, MoEConfig
+
+    moe_config = MoEConfig(
+        num_experts=8,
+        top_k=2,
+        dropout=0.0,
+        capacity_factor=1.25,
+    )
+
+    config = ModernLLMConfig(
+        vocab_size=50257,
+        d_model=768,
+        n_layers=12,
+        n_heads=12,
+        ffn_hidden_size=3072,
+        max_seq_len=1024,
+        use_moe=True,
+        moe_config=moe_config,
+    )
+    ```
+  </Tab>
+  <Tab title="Attention sinks">
+    ```python
+    config = ModernLLMConfig(
+        vocab_size=50257,
+        d_model=768,
+        n_layers=12,
+        n_heads=12,
+        ffn_hidden_size=3072,
+        max_seq_len=1024,
+        use_attention_sinks=True,
+        num_attention_sinks=4,  # Keep first 4 tokens in attention
+    )
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  All configurations include automatic validation. Invalid settings (like `gqa_groups` not dividing `n_heads`) will raise clear error messages at initialization.
+</Note>
+
+## Training configuration
+
+The `TrainingConfig` dataclass controls hyperparameters, batch sizes, and training logistics.
+
+### Basic training setup
+
+```python
+from modern_llm.config import TrainingConfig
+from pathlib import Path
+
+training_config = TrainingConfig(
+    run_name="my-experiment",
+    dataset_name="wikitext-2-raw-v1",
+    tokenizer_name="gpt2",
+    output_dir=Path("experiments/my-experiment"),
+    batch_size=64,
+    micro_batch_size=8,
+    gradient_accumulation_steps=8,  # 64 / 8 = 8 steps
+    learning_rate=3e-4,
+    max_steps=10000,
+    warmup_steps=500,
+    weight_decay=0.1,
+    max_grad_norm=1.0,
+)
+```
+
+### Memory optimization
+
+<Accordion title="Gradient accumulation and checkpointing">
+  ```python
+  training_config = TrainingConfig(
+      run_name="memory-optimized",
+      dataset_name="wikitext-2-raw-v1",
+      tokenizer_name="gpt2",
+      output_dir=Path("experiments/memory-opt"),
+      batch_size=128,
+      micro_batch_size=4,  # Small micro-batch for limited VRAM
+      gradient_accumulation_steps=32,  # 128 / 4 = 32
+      learning_rate=3e-4,
+      max_steps=20000,
+      mixed_precision="bf16",  # bf16, fp16, or fp32
+      gradient_checkpointing=True,  # Trade compute for memory
+      compile_model=True,  # torch.compile for speedup
+  )
+  ```
+
+  **Gradient accumulation** allows effective batch sizes larger than GPU memory by splitting batches into smaller micro-batches. The formula is:
+  ```
+  gradient_accumulation_steps = batch_size / micro_batch_size
+  ```
+
+  **Gradient checkpointing** reduces memory by recomputing activations during backward pass instead of storing them.
+</Accordion>
+
+### Logging and checkpointing
+
+```python
+training_config = TrainingConfig(
+    run_name="monitored-run",
+    dataset_name="wikitext-2-raw-v1",
+    tokenizer_name="gpt2",
+    output_dir=Path("experiments/monitored"),
+    batch_size=64,
+    micro_batch_size=8,
+    gradient_accumulation_steps=8,
+    learning_rate=3e-4,
+    max_steps=50000,
+    eval_every=500,   # Evaluate every 500 steps
+    save_every=2000,  # Save checkpoint every 2000 steps
+    log_every=100,    # Log metrics every 100 steps
+    seed=42,          # Reproducibility
+)
+```
+
+## Pipeline configuration
+
+The `PipelineConfig` unifies model, training, hardware, and data configurations for end-to-end training pipelines (pretrain → SFT → DPO → verifier).
+
+### Using presets
+
+Modern LLM includes optimized presets for common scenarios:
+
+```python
+from modern_llm.config import get_pipeline_preset
+
+# Quick smoke test (minimal resources)
+config = get_pipeline_preset("local-smoke")
+
+# Full local training (RTX 3060)
+config = get_pipeline_preset("local")
+
+# GPU smoke test (auto-detect hardware)
+config = get_pipeline_preset("gpu-smoke")
+
+# Production GPU training (A100/H100)
+config = get_pipeline_preset("gpu")
+```
+
+<Accordion title="Preset comparison">
+  | Preset | Model Size | Hardware | Pretrain Steps | Use Case |
+  |--------|-----------|----------|----------------|----------|
+  | `local-smoke` | 256d, 4L | RTX 3060 | 100 | Quick validation |
+  | `local` | 768d, 12L | RTX 3060 | 20K | Full local training |
+  | `gpu-smoke` | 256d, 4L | Auto | 100 | Cloud quick test |
+  | `gpu` | 1024d, 12L | A100/H100 | 80K | Production training |
+</Accordion>
+
+### Custom pipeline configuration
+
+```python
+from modern_llm.config import PipelineConfig
+
+config = PipelineConfig(
+    # Model architecture
+    vocab_size=50257,
+    d_model=768,
+    n_layers=12,
+    n_heads=12,
+    ffn_hidden_size=3072,
+    max_seq_len=1024,
+    dropout=0.1,
+    use_rope=True,
+    use_swiglu=True,
+    
+    # Hardware
+    hardware_preset="auto",
+    
+    # Data scale
+    data_preset="medium",
+    
+    # Pretraining
+    pretrain_datasets=[
+        "wikitext-103-raw-v1",
+        "openwebtext",
+        "roneneldan/TinyStories:100000",  # Limit to 100K samples
+    ],
+    pretrain_max_steps=20000,
+    pretrain_lr=3e-4,
+    pretrain_batch_size=64,
+    pretrain_micro_batch_size=8,
+    
+    # SFT
+    sft_datasets=[
+        "tatsu-lab/alpaca",
+        "databricks/databricks-dolly-15k",
+    ],
+    sft_max_steps=5000,
+    sft_lr=1e-5,
+    sft_batch_size=32,
+    
+    # DPO
+    dpo_dataset="Anthropic/hh-rlhf",
+    dpo_max_steps=2000,
+    dpo_lr=5e-6,
+    dpo_beta=0.1,
+    
+    # Paths
+    output_dir="experiments/custom-run",
+    run_name="my-custom-llm",
+    tokenizer_name="gpt2",
+)
+```
+
+### Extracting stage-specific configs
+
+```python
+from modern_llm.config import PipelineConfig
+
+pipeline = PipelineConfig(...)
+
+# Get configs for each stage
+model_config = pipeline.get_model_config()
+pretrain_config = pipeline.get_pretrain_config()
+sft_config = pipeline.get_sft_config()
+dpo_config = pipeline.get_dpo_config()
+verifier_config = pipeline.get_verifier_config()
+
+hardware_config = pipeline.get_hardware_config()
+data_config = pipeline.get_data_config()
+```
+
+### Saving and loading configs
+
+```python
+from pathlib import Path
+from modern_llm.config import PipelineConfig
+
+# Save to JSON
+config = PipelineConfig(...)
+config.save(Path("experiments/my-run/config.json"))
+
+# Load from JSON
+loaded_config = PipelineConfig.load(Path("experiments/my-run/config.json"))
+
+# Convert to/from dict
+config_dict = config.to_dict()
+config_from_dict = PipelineConfig.from_dict(config_dict)
+```
+
+## Hardware configuration
+
+The `HardwareConfig` dataclass manages device placement, distributed training, and memory optimization.
+
+### Using presets
+
+```python
+from modern_llm.config import get_hardware_preset, LOCAL_RTX3060, GPU_A100, GPU_H100
+
+# Auto-detect from environment (torchrun/SLURM)
+hw_config = get_hardware_preset("auto")
+
+# Specific presets
+local_hw = get_hardware_preset("local")      # RTX 3060
+a100_hw = get_hardware_preset("a100")       # A100 80GB
+h100_hw = get_hardware_preset("h100")       # H100 80GB
+
+# Or use constants directly
+hw_config = LOCAL_RTX3060
+```
+
+### Custom hardware config
+
+```python
+from modern_llm.config import HardwareConfig
+
+hw_config = HardwareConfig(
+    device="cuda",
+    num_gpus=4,
+    gpu_memory_gb=40,
+    mixed_precision="bf16",
+    gradient_checkpointing=True,
+    is_distributed=False,
+)
+```
+
+### Distributed training
+
+```python
+from modern_llm.config import HardwareConfig
+
+# Auto-detect from torchrun environment variables
+hw_config = HardwareConfig.from_env()
+
+print(f"Local rank: {hw_config.local_rank}")
+print(f"World size: {hw_config.world_size}")
+print(f"Device: {hw_config.get_torch_device()}")
+```
+
+<Tip>
+  When using `torchrun`, the `from_env()` method automatically reads `LOCAL_RANK` and `WORLD_SIZE` environment variables to configure distributed training.
+</Tip>
+
+## Data configuration
+
+The `DataConfig` dataclass controls dataset mixing and data loading.
+
+### Using presets
+
+```python
+from modern_llm.config import get_data_preset
+
+# Small: 10M tokens, single dataset
+small = get_data_preset("small")
+
+# Medium: 100M tokens, multiple datasets
+medium = get_data_preset("medium")
+
+# Large: 1B tokens, diverse mix
+large = get_data_preset("large")
+
+# XL: 5B tokens, full corpus
+xl = get_data_preset("xl")
+```
+
+<Accordion title="Data preset details">
+  | Preset | Tokens | Datasets | Epochs | Use Case |
+  |--------|--------|----------|--------|----------|
+  | `small` | 10M | WikiText-2 | 3 | Quick experiments |
+  | `medium` | 100M | WikiText-2 + TinyStories | 5 | Local training |
+  | `large` | 1B | + OpenWebText | 1 | Production small |
+  | `xl` | 5B | + BookCorpus | 1 | Production large |
+</Accordion>
+
+### Custom data config
+
+```python
+from modern_llm.config import DataConfig
+
+data_config = DataConfig(
+    datasets=[
+        "wikitext-103-raw-v1",
+        "roneneldan/TinyStories",
+        "openwebtext",
+    ],
+    tokens_target=500_000_000,  # 500M tokens
+    max_epochs=3,
+    shuffle_buffer=50_000,
+    num_workers=8,
+    prefetch_factor=4,
+)
+```
+
+## Validation and error handling
+
+All configuration dataclasses include `__post_init__` validation to catch errors early:
+
+```python
+from modern_llm.config import ModernLLMConfig
+
+# This will raise ValueError with clear message
+try:
+    config = ModernLLMConfig(
+        vocab_size=50257,
+        d_model=768,
+        n_layers=12,
+        n_heads=11,  # ERROR: 768 not divisible by 11
+        ffn_hidden_size=3072,
+        max_seq_len=1024,
+    )
+except ValueError as e:
+    print(f"Configuration error: {e}")
+    # Output: "d_model must be positive and divisible by n_heads (d_model=768, n_heads=11)"
+```
+
+## Complete example
+
+Putting it all together:
+
+```python
+from pathlib import Path
+from modern_llm.config import (
+    ModernLLMConfig,
+    TrainingConfig,
+    PipelineConfig,
+    get_hardware_preset,
+)
+
+# Option 1: Use preset for quick start
+config = get_pipeline_preset("local")
+
+# Option 2: Build custom configuration
+config = PipelineConfig(
+    # Model
+    d_model=768,
+    n_layers=12,
+    n_heads=12,
+    ffn_hidden_size=3072,
+    max_seq_len=1024,
+    use_rope=True,
+    use_swiglu=True,
+    
+    # Training
+    pretrain_max_steps=20000,
+    pretrain_lr=3e-4,
+    pretrain_batch_size=64,
+    sft_max_steps=5000,
+    
+    # Hardware and data
+    hardware_preset="auto",
+    data_preset="medium",
+    
+    # Paths
+    output_dir="experiments/my-llm",
+    run_name="my-llm",
+)
+
+# Save configuration
+config.save(Path("experiments/my-llm/config.json"))
+
+# Extract stage-specific configs
+model_config = config.get_model_config()
+training_config = config.get_pretrain_config()
+```
+
+## See also
+
+- [Datasets](/guides/datasets) - Learn about dataset loading and preprocessing
+- [Checkpoints](/guides/checkpoints) - Save and load model checkpoints
+- [API Reference](/api/config/model-config) - Complete configuration API documentation

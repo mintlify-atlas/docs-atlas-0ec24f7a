@@ -1,0 +1,231 @@
+---
+title: Transformer models
+description: Decoder-only transformer architecture with RoPE and RMSNorm
+---
+
+## ModernDecoderLM
+
+Decoder-only language model with RoPE positional embeddings and RMSNorm normalization.
+
+The model follows GPT-style causal language modeling but uses modern architectural choices:
+- RMSNorm instead of LayerNorm (Zhang & Sennrich, 2019)
+- SwiGLU activation instead of GELU (Shazeer, 2020; PaLM, 2022)
+- Rotary positional embeddings (Su et al., 2021)
+- Optional mixture of experts (MoE) layers
+
+### Constructor
+
+```python
+from modern_llm.models.transformer import ModernDecoderLM
+from modern_llm.config.model_config import ModernLLMConfig
+
+config = ModernLLMConfig(
+    vocab_size=50257,
+    d_model=768,
+    n_layers=12,
+    n_heads=12,
+    max_seq_len=2048
+)
+model = ModernDecoderLM(config)
+```
+
+<ParamField path="config" type="ModernLLMConfig" required>
+  Model configuration containing all hyperparameters including vocabulary size, model dimensions, number of layers and heads, dropout rates, and architectural choices.
+</ParamField>
+
+### Attributes
+
+<ResponseField name="config" type="ModernLLMConfig">
+  The configuration object passed during initialization.
+</ResponseField>
+
+<ResponseField name="token_embed" type="nn.Embedding">
+  Token embedding layer mapping vocabulary indices to d_model dimensional vectors. Shape: (vocab_size, d_model).
+</ResponseField>
+
+<ResponseField name="blocks" type="nn.ModuleList">
+  List of n_layers decoder blocks, each containing multi-head attention and feedforward layers.
+</ResponseField>
+
+<ResponseField name="final_norm" type="RMSNorm">
+  Final RMSNorm layer applied before the language model head.
+</ResponseField>
+
+<ResponseField name="lm_head" type="nn.Linear">
+  Output projection from d_model to vocab_size. Weights are tied with token_embed when tie_embeddings=True.
+</ResponseField>
+
+### forward
+
+```python
+def forward(
+    self,
+    input_ids: Tensor,
+    attention_mask: Optional[Tensor] = None,
+    labels: Optional[Tensor] = None,
+) -> Dict[str, Optional[Tensor]]
+```
+
+Causal language model forward pass.
+
+<ParamField path="input_ids" type="Tensor" required>
+  Input token IDs of shape (batch, seq_len). Values must be in range [0, vocab_size).
+</ParamField>
+
+<ParamField path="attention_mask" type="Optional[Tensor]">
+  Attention mask of shape (batch, seq_len) with 1 for tokens to attend to and 0 for padding. Defaults to all ones.
+</ParamField>
+
+<ParamField path="labels" type="Optional[Tensor]">
+  Target token IDs for computing cross-entropy loss. Shape must match input_ids. Use -100 to ignore specific positions.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="logits" type="Tensor">
+  Output logits of shape (batch, seq_len, vocab_size) representing next-token predictions.
+</ResponseField>
+
+<ResponseField name="loss" type="Optional[Tensor]">
+  Cross-entropy loss computed when labels are provided. Scalar tensor.
+</ResponseField>
+
+### Example
+
+```python
+import torch
+from modern_llm.models.transformer import ModernDecoderLM
+from modern_llm.config.model_config import ModernLLMConfig
+
+# Initialize model
+config = ModernLLMConfig(
+    vocab_size=50257,
+    d_model=768,
+    n_layers=12,
+    n_heads=12,
+    max_seq_len=2048,
+    dropout=0.1,
+    use_rope=True,
+    tie_embeddings=True
+)
+model = ModernDecoderLM(config)
+
+# Forward pass for generation
+input_ids = torch.randint(0, config.vocab_size, (2, 128))
+outputs = model(input_ids)
+logits = outputs["logits"]  # Shape: (2, 128, 50257)
+
+# Forward pass with training loss
+labels = torch.randint(0, config.vocab_size, (2, 128))
+outputs = model(input_ids, labels=labels)
+loss = outputs["loss"]  # Scalar tensor
+```
+
+### Complexity
+
+The forward pass has complexity O(n_layers · seq_len² · d_model / n_heads) due to quadratic attention.
+
+---
+
+## DecoderBlock
+
+Transformer decoder block implementing pre-normalization with residual connections.
+
+Each block applies:
+1. Multi-head self-attention with RoPE
+2. Feedforward network (SwiGLU or MoE)
+3. Residual connections and RMSNorm before each sub-layer
+
+### Architecture
+
+```
+h' = h + MultiHeadAttention(RMSNorm(h))
+h'' = h' + SwiGLU(RMSNorm(h'))
+```
+
+### Constructor
+
+```python
+from modern_llm.models.transformer import DecoderBlock
+from modern_llm.config.model_config import ModernLLMConfig
+
+config = ModernLLMConfig(d_model=768, n_heads=12)
+block = DecoderBlock(config)
+```
+
+<ParamField path="config" type="ModernLLMConfig" required>
+  Model configuration. The block uses d_model, n_heads, dropout, and attention configuration parameters.
+</ParamField>
+
+### Attributes
+
+<ResponseField name="attn" type="MultiHeadAttention">
+  Multi-head self-attention layer with optional RoPE, GQA, and attention sinks.
+</ResponseField>
+
+<ResponseField name="attn_norm" type="RMSNorm">
+  RMSNorm layer applied before attention.
+</ResponseField>
+
+<ResponseField name="ffn" type="Union[SwiGLU, MixtureOfExperts]">
+  Feedforward network. Uses SwiGLU by default or MixtureOfExperts when use_moe=True.
+</ResponseField>
+
+<ResponseField name="ffn_norm" type="RMSNorm">
+  RMSNorm layer applied before feedforward network.
+</ResponseField>
+
+<ResponseField name="dropout" type="nn.Dropout">
+  Dropout applied to attention and feedforward outputs.
+</ResponseField>
+
+### forward
+
+```python
+def forward(
+    self,
+    hidden_states: Tensor,
+    attention_mask: Optional[Tensor] = None
+) -> Tensor
+```
+
+Apply decoder block transformations.
+
+<ParamField path="hidden_states" type="Tensor" required>
+  Input tensor of shape (batch, seq_len, d_model).
+</ParamField>
+
+<ParamField path="attention_mask" type="Optional[Tensor]">
+  Additive attention bias of shape (batch, 1, seq_len, seq_len) with zeros for valid positions and -inf for masked positions.
+</ParamField>
+
+#### Returns
+
+<ResponseField name="output" type="Tensor">
+  Transformed hidden states with same shape (batch, seq_len, d_model).
+</ResponseField>
+
+### Example
+
+```python
+import torch
+from modern_llm.models.transformer import DecoderBlock
+from modern_llm.config.model_config import ModernLLMConfig
+
+config = ModernLLMConfig(
+    d_model=768,
+    n_heads=12,
+    ffn_hidden_size=3072,
+    dropout=0.1
+)
+block = DecoderBlock(config)
+
+# Process hidden states
+hidden_states = torch.randn(2, 128, 768)
+output = block(hidden_states)
+print(output.shape)  # torch.Size([2, 128, 768])
+```
+
+### Complexity
+
+Dominated by attention: O(seq_len² · d_model / n_heads) per block.

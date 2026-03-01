@@ -1,0 +1,220 @@
+---
+title: Metrics
+description: Compute evaluation metrics for classification, QA, and summarization tasks
+---
+
+## compute_metrics
+
+```python
+def compute_metrics(
+    task_name: str,
+    predictions: Sequence,
+    references: Sequence,
+) -> EvaluationResult
+```
+
+Compute accuracy or exact-match style metrics based on task type.
+
+### Mathematical definitions
+
+The metrics are computed using standard formulas from benchmark papers:
+
+**Accuracy** (for classification tasks like SST-2):
+$$
+\text{accuracy} = \frac{1}{N} \sum_{i=1}^{N} \mathbb{1}[p_i = y_i]
+$$
+
+**Exact Match** (for QA tasks like GSM8K):
+$$
+\text{exact\_match} = \frac{1}{N} \sum_{i=1}^{N} \mathbb{1}[\text{normalize}(p_i) = \text{normalize}(y_i)]
+$$
+
+where $p_i$ are predictions and $y_i$ are references.
+
+### Parameters
+
+<ParamField path="task_name" type="str" required>
+  Name of the task to evaluate. Supported values:
+  - `"sst-2"` or `"classification"` - computes accuracy
+  - `"gsm8k"` or `"math"` - computes exact match
+  - `"samsum"` or `"summarization"` - computes ROUGE scores
+</ParamField>
+
+<ParamField path="predictions" type="Sequence" required>
+  Model predictions. Must have the same length as references.
+</ParamField>
+
+<ParamField path="references" type="Sequence" required>
+  Ground truth labels or answers. Must have the same length as predictions.
+</ParamField>
+
+### Returns
+
+<ResponseField name="result" type="EvaluationResult">
+  Container with metric scores keyed by metric name. The specific metrics depend on the task:
+  - Classification: `{"accuracy": float}`
+  - QA/Math: `{"exact_match": float}`
+  - Summarization: `{"rouge1": float, "rouge2": float, "rougeL": float}`
+</ResponseField>
+
+### Raises
+
+- `ValueError` - If predictions and references have different lengths
+- `NotImplementedError` - If task_name is not supported
+- `ImportError` - If evaluating summarization tasks without the `evaluate` package
+
+### Complexity
+
+- Time: O(N) where N is the number of samples
+- Space: O(1) for accuracy/exact match, O(N) for ROUGE
+
+### Usage
+
+```python
+from modern_llm.evaluation.metrics import compute_metrics
+
+# Classification task
+predictions = [1, 0, 1, 1, 0]
+references = [1, 0, 1, 0, 0]
+result = compute_metrics("sst-2", predictions, references)
+print(result.metrics)  # {"accuracy": 0.8}
+
+# Math QA task
+predictions = ["42", "100", "3.14"]
+references = ["42", "99", "3.14"]
+result = compute_metrics("gsm8k", predictions, references)
+print(result.metrics)  # {"exact_match": 0.667}
+
+# Summarization task (requires `evaluate` package)
+predictions = ["The cat sat on the mat."]
+references = ["A cat was sitting on a mat."]
+result = compute_metrics("samsum", predictions, references)
+print(result.metrics)  # {"rouge1": ..., "rouge2": ..., "rougeL": ...}
+```
+
+---
+
+## compute_f1
+
+```python
+def compute_f1(
+    predictions: Sequence[int],
+    references: Sequence[int],
+    num_classes: int = 2,
+) -> Dict[str, float]
+```
+
+Compute macro-averaged F1 score for multi-class classification.
+
+### Mathematical definitions
+
+For each class $c$:
+
+$$
+\text{precision}_c = \frac{TP_c}{TP_c + FP_c}
+$$
+
+$$
+\text{recall}_c = \frac{TP_c}{TP_c + FN_c}
+$$
+
+$$
+F1_c = \frac{2 \cdot \text{precision}_c \cdot \text{recall}_c}{\text{precision}_c + \text{recall}_c}
+$$
+
+Macro-averaged F1:
+$$
+\text{macro\_F1} = \frac{1}{C} \sum_{c=1}^{C} F1_c
+$$
+
+where $C$ is the number of classes, and $TP$, $FP$, $FN$ are true positives, false positives, and false negatives respectively.
+
+### Parameters
+
+<ParamField path="predictions" type="Sequence[int]" required>
+  Predicted class labels. Must be integers in range [0, num_classes).
+</ParamField>
+
+<ParamField path="references" type="Sequence[int]" required>
+  Ground truth class labels. Must be integers in range [0, num_classes).
+</ParamField>
+
+<ParamField path="num_classes" type="int" default="2">
+  Total number of classes in the classification task.
+</ParamField>
+
+### Returns
+
+<ResponseField name="result" type="Dict[str, float]">
+  Dictionary containing:
+  - `macro_f1` (float): Macro-averaged F1 score across all classes
+  - `per_class_f1` (List[float]): F1 score for each class
+</ResponseField>
+
+### Raises
+
+- `ValueError` - If predictions and references have different lengths
+
+### Usage
+
+```python
+from modern_llm.evaluation.metrics import compute_f1
+
+# Binary classification
+predictions = [0, 1, 1, 0, 1, 1, 0, 0]
+references = [0, 1, 0, 0, 1, 1, 0, 1]
+result = compute_f1(predictions, references, num_classes=2)
+print(f"Macro F1: {result['macro_f1']:.3f}")
+print(f"Per-class F1: {result['per_class_f1']}")
+
+# Multi-class classification
+predictions = [0, 1, 2, 0, 1, 2, 2, 1]
+references = [0, 1, 2, 1, 1, 0, 2, 1]
+result = compute_f1(predictions, references, num_classes=3)
+print(f"Macro F1: {result['macro_f1']:.3f}")
+for i, f1 in enumerate(result['per_class_f1']):
+    print(f"  Class {i} F1: {f1:.3f}")
+```
+
+---
+
+## EvaluationResult
+
+```python
+@dataclass
+class EvaluationResult:
+    task_name: str
+    metrics: Dict[str, float]
+```
+
+Container for metric scores keyed by metric name.
+
+### Attributes
+
+<ParamField path="task_name" type="str">
+  Name of the evaluated task (e.g., "sst-2", "gsm8k", "samsum").
+</ParamField>
+
+<ParamField path="metrics" type="Dict[str, float]">
+  Dictionary mapping metric names to their computed values. The keys depend on the task:
+  - Classification tasks: `"accuracy"`
+  - QA/Math tasks: `"exact_match"`
+  - Summarization tasks: `"rouge1"`, `"rouge2"`, `"rougeL"`
+</ParamField>
+
+### Usage
+
+```python
+from modern_llm.evaluation.metrics import EvaluationResult, compute_metrics
+
+# Get results from compute_metrics
+result = compute_metrics("sst-2", predictions=[1, 0, 1], references=[1, 0, 0])
+
+# Access task name and metrics
+print(f"Task: {result.task_name}")  # "sst-2"
+print(f"Accuracy: {result.metrics['accuracy']:.2%}")  # "66.67%"
+
+# Iterate over all metrics
+for metric_name, value in result.metrics.items():
+    print(f"{metric_name}: {value:.4f}")
+```

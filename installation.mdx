@@ -1,0 +1,498 @@
+---
+title: Installation
+description: Complete installation guide for Modern LLM including prerequisites, environment setup, and verification
+---
+
+## System requirements
+
+### Hardware requirements
+
+<CardGroup cols={2}>
+  <Card title="Minimum (smoke test)" icon="server">
+    - **CPU:** Any modern x86-64 or ARM64 processor
+    - **RAM:** 8GB
+    - **Storage:** 10GB free space
+    - **GPU:** Not required (CPU-only mode available)
+  </Card>
+  
+  <Card title="Recommended (full training)" icon="microchip">
+    - **CPU:** 8+ core modern processor
+    - **RAM:** 16GB+
+    - **Storage:** 50GB+ SSD
+    - **GPU:** NVIDIA RTX 3060 (12GB VRAM) or better
+  </Card>
+</CardGroup>
+
+<Tip>
+  The 253M parameter model was successfully trained on an RTX 3060 (12GB VRAM) using the included configuration. Larger GPUs like RTX 4090 or A100 allow for bigger models and faster training.
+</Tip>
+
+### Software requirements
+
+- **Operating System:** Linux, macOS, or Windows
+- **Python:** 3.9 or higher (3.10+ recommended)
+- **CUDA:** 11.8 or higher (for GPU support)
+- **Git:** For cloning the repository
+
+<Warning>
+  Python 3.8 and earlier are not supported due to dependencies on modern type hints and dataclass features.
+</Warning>
+
+## Installation methods
+
+<Tabs>
+  <Tab title="From source (recommended)">
+    ### Clone and install from source
+    
+    This is the recommended installation method for development and customization.
+    
+    <Steps>
+      <Step title="Clone the repository">
+        ```bash
+        git clone https://github.com/yourusername/modern_llm.git
+        cd modern_llm
+        ```
+      </Step>
+      
+      <Step title="Create virtual environment">
+        <CodeGroup>
+          ```bash Linux/macOS
+          python3 -m venv .venv
+          source .venv/bin/activate
+          ```
+          
+          ```bash Windows (PowerShell)
+          python -m venv .venv
+          .venv\Scripts\Activate.ps1
+          ```
+          
+          ```bash Windows (Command Prompt)
+          python -m venv .venv
+          .venv\Scripts\activate.bat
+          ```
+        </CodeGroup>
+        
+        <Tip>
+          Using a virtual environment isolates dependencies and prevents conflicts with system packages.
+        </Tip>
+      </Step>
+      
+      <Step title="Install dependencies">
+        Install all required packages:
+        
+        ```bash
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        ```
+        
+        This installs:
+        - PyTorch 2.3.0+ with CUDA support
+        - Transformers 4.44.0+ for tokenizers and models
+        - Datasets 3.0.0+ for data loading
+        - Training utilities (accelerate, PEFT, TRL)
+        - Evaluation tools (evaluate, rouge-score)
+        - Scientific computing (numpy, pandas, scikit-learn)
+        - Visualization (matplotlib, seaborn)
+      </Step>
+      
+      <Step title="Install package in development mode">
+        Install the package in editable mode for development:
+        
+        ```bash
+        pip install -e .
+        ```
+        
+        This allows you to modify the source code without reinstalling.
+      </Step>
+    </Steps>
+  </Tab>
+  
+  <Tab title="With conda">
+    ### Using conda/mamba
+    
+    If you prefer conda for package management:
+    
+    <Steps>
+      <Step title="Create conda environment">
+        ```bash
+        conda create -n modern_llm python=3.10
+        conda activate modern_llm
+        ```
+      </Step>
+      
+      <Step title="Install PyTorch with CUDA">
+        Install PyTorch with CUDA support from conda-forge:
+        
+        ```bash
+        conda install pytorch pytorch-cuda=11.8 -c pytorch -c nvidia
+        ```
+        
+        <Note>
+          Adjust the CUDA version (11.8, 12.1, etc.) to match your system's CUDA installation.
+        </Note>
+      </Step>
+      
+      <Step title="Install remaining dependencies">
+        ```bash
+        pip install -r requirements.txt
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  
+  <Tab title="Docker (experimental)">
+    ### Using Docker
+    
+    <Warning>
+      Docker support is experimental. The recommended method is installing from source.
+    </Warning>
+    
+    Build the Docker image:
+    
+    ```bash
+    docker build -t modern_llm .
+    docker run --gpus all -it modern_llm
+    ```
+  </Tab>
+</Tabs>
+
+## Verify installation
+
+After installation, verify that everything is set up correctly:
+
+### Check Python version
+
+```bash
+python --version
+```
+
+Should output Python 3.9 or higher.
+
+### Check PyTorch installation
+
+```bash
+python -c "import torch; print(f'PyTorch {torch.__version__}')"
+```
+
+Expected output:
+```
+PyTorch 2.3.0+cu118
+```
+
+### Check CUDA availability
+
+```bash
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+python -c "import torch; print(f'CUDA version: {torch.version.cuda}')"
+python -c "import torch; print(f'GPU count: {torch.cuda.device_count()}')"
+```
+
+For GPU systems, you should see:
+```
+CUDA available: True
+CUDA version: 11.8
+GPU count: 1
+```
+
+<Note>
+  If CUDA is not available but you have an NVIDIA GPU, you may need to install or update your CUDA drivers.
+</Note>
+
+### Check package imports
+
+Verify all key modules import correctly:
+
+```bash
+python -c "from modern_llm.models import ModernDecoderLM; print('✓ Models')"
+python -c "from modern_llm.config import ModernLLMConfig; print('✓ Config')"
+python -c "from modern_llm.training import run_training; print('✓ Training')"
+python -c "from transformers import AutoTokenizer; print('✓ Transformers')"
+python -c "from datasets import load_dataset; print('✓ Datasets')"
+```
+
+All checks should print a green checkmark.
+
+### Run setup verification script
+
+Use the included script to perform comprehensive checks:
+
+```bash
+python scripts/setup_check.py
+```
+
+This script verifies:
+- Python version
+- PyTorch installation and version
+- CUDA availability and version
+- All required packages
+- GPU memory availability
+- Model initialization
+- Dataset loading
+
+<CodeGroup>
+```txt Expected output (with GPU)
+=== Modern LLM Setup Check ===
+
+✓ Python 3.10.12
+✓ PyTorch 2.3.0+cu118  
+✓ CUDA available: True
+✓ CUDA version: 11.8
+✓ GPU: NVIDIA GeForce RTX 3060 (12GB)
+✓ All required packages installed
+✓ Model initialization OK
+✓ Dataset loading OK
+
+=== Setup Complete ===
+```
+
+```txt Expected output (CPU only)
+=== Modern LLM Setup Check ===
+
+✓ Python 3.10.12
+✓ PyTorch 2.3.0+cpu
+⚠ CUDA not available (CPU mode)
+✓ All required packages installed  
+✓ Model initialization OK
+✓ Dataset loading OK
+
+=== Setup Complete ===
+```
+</CodeGroup>
+
+## Configuration
+
+### Download datasets
+
+The first time you run training or evaluation, datasets will be automatically downloaded from Hugging Face:
+
+- **WikiText-103** (~200MB) - Pretraining corpus
+- **TinyStories** (~500MB) - Pretraining corpus  
+- **Alpaca** (~50MB) - Instruction tuning dataset
+- **HH-RLHF** (~500MB) - Preference alignment dataset
+- **GSM8K** (~10MB) - Math reasoning benchmark
+
+To pre-download datasets:
+
+```bash
+python scripts/verify_datasets.py
+```
+
+<Tip>
+  Datasets are cached in `~/.cache/huggingface/datasets` by default. Set `HF_DATASETS_CACHE` environment variable to use a different location.
+</Tip>
+
+### Environment variables
+
+Optional environment variables for customization:
+
+```bash
+# Cache directory for Hugging Face datasets
+export HF_DATASETS_CACHE="/path/to/datasets"
+
+# Cache directory for Hugging Face models
+export HF_HOME="/path/to/models"
+
+# Number of threads for PyTorch
+export OMP_NUM_THREADS=8
+
+# CUDA device (if multiple GPUs)
+export CUDA_VISIBLE_DEVICES=0
+```
+
+### Hardware-specific configurations
+
+The repository includes optimized configurations for different hardware:
+
+<CardGroup cols={2}>
+  <Card title="RTX 3060 (12GB)" icon="microchip">
+    ```bash
+    # Use the included RTX 3060 config
+    python scripts/run_pipeline.py \
+      --config configs/lm_max_rtx3060.json \
+      --stage pretrain
+    ```
+    
+    Configuration:
+    - d_model: 768
+    - n_layers: 12
+    - batch_size: 64 (with gradient accumulation)
+    - micro_batch_size: 2
+    - mixed_precision: bf16
+  </Card>
+  
+  <Card title="High-end GPU (24GB+)" icon="rocket">
+    ```bash
+    # Use the GPU preset
+    python scripts/run_pipeline.py \
+      --config gpu \
+      --stage pretrain
+    ```
+    
+    Configuration:
+    - d_model: 1024 
+    - n_layers: 24
+    - batch_size: 128
+    - micro_batch_size: 8
+    - mixed_precision: bf16
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="CUDA version mismatch" icon="triangle-exclamation">
+    If you see CUDA version errors:
+    
+    ```
+    RuntimeError: CUDA version mismatch
+    ```
+    
+    **Solution:** Reinstall PyTorch matching your CUDA version:
+    
+    ```bash
+    # For CUDA 11.8
+    pip install torch --index-url https://download.pytorch.org/whl/cu118
+    
+    # For CUDA 12.1
+    pip install torch --index-url https://download.pytorch.org/whl/cu121
+    ```
+  </Accordion>
+  
+  <Accordion title="Out of memory during installation" icon="memory">
+    If pip runs out of memory during installation:
+    
+    ```bash
+    # Install packages one at a time
+    pip install torch
+    pip install transformers
+    pip install datasets
+    # ... etc
+    ```
+    
+    Or use `--no-cache-dir`:
+    ```bash
+    pip install --no-cache-dir -r requirements.txt
+    ```
+  </Accordion>
+  
+  <Accordion title="Permission denied errors" icon="lock">
+    If you see permission errors when installing:
+    
+    ```bash
+    # Use --user flag (not recommended with venv)
+    pip install --user -r requirements.txt
+    
+    # Or fix venv permissions
+    sudo chown -R $USER:$USER .venv
+    ```
+    
+    <Warning>
+      Using `--user` with a virtual environment can cause conflicts. Prefer fixing permissions.
+    </Warning>
+  </Accordion>
+  
+  <Accordion title="Slow dataset downloads" icon="download">
+    If dataset downloads are very slow:
+    
+    1. Use a different Hugging Face mirror:
+       ```bash
+       export HF_ENDPOINT="https://hf-mirror.com"
+       ```
+    
+    2. Download datasets manually:
+       ```python
+       from datasets import load_dataset
+       load_dataset("wikitext", "wikitext-103-raw-v1")
+       load_dataset("roneneldan/TinyStories")
+       load_dataset("tatsu-lab/alpaca")
+       load_dataset("Anthropic/hh-rlhf")
+       load_dataset("gsm8k", "main")
+       ```
+  </Accordion>
+  
+  <Accordion title="Import errors after installation" icon="file-import">
+    If imports fail even after installation:
+    
+    1. Verify virtual environment is activated:
+       ```bash
+       which python  # Should point to .venv/bin/python
+       ```
+    
+    2. Reinstall in development mode:
+       ```bash
+       pip install -e .
+       ```
+    
+    3. Check Python path:
+       ```bash
+       python -c "import sys; print('\n'.join(sys.path))"
+       ```
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+Once installation is complete:
+
+<CardGroup cols={2}>
+  <Card title="Run quick start" icon="rocket" href="/quickstart">
+    Try the 5-minute smoke test to verify everything works
+  </Card>
+  <Card title="Train a model" icon="play" href="/training">
+    Start training your first model with the pipeline
+  </Card>
+  <Card title="Explore architecture" icon="brain" href="/architecture">
+    Learn about the model architecture and components
+  </Card>
+  <Card title="Configuration guide" icon="sliders" href="/configuration">
+    Customize model size and training parameters
+  </Card>
+</CardGroup>
+
+## Package dependencies
+
+Complete list of dependencies from `requirements.txt`:
+
+<Accordion title="Core dependencies">
+  ```txt
+  torch>=2.3.0
+  torchvision>=0.18.0
+  torchaudio>=2.3.0
+  transformers>=4.44.0
+  datasets>=3.0.0
+  accelerate>=1.0.0
+  ```
+</Accordion>
+
+<Accordion title="Training utilities">
+  ```txt
+  peft>=0.12.0         # Parameter-efficient fine-tuning
+  trl>=0.9.0           # Transformer Reinforcement Learning
+  sentencepiece>=0.2.0 # Tokenization
+  ```
+</Accordion>
+
+<Accordion title="Evaluation and metrics">
+  ```txt
+  evaluate>=0.4.2
+  rouge-score>=0.1.2
+  scikit-learn>=1.4.0
+  ```
+</Accordion>
+
+<Accordion title="Scientific computing">
+  ```txt
+  numpy>=1.26.0
+  pandas>=2.2.0
+  tqdm>=4.66.0
+  ```
+</Accordion>
+
+<Accordion title="Visualization and utilities">
+  ```txt
+  matplotlib>=3.8.0
+  seaborn>=0.13.0
+  pyyaml>=6.0.0
+  pytest>=8.0.0
+  ```
+</Accordion>

@@ -1,0 +1,296 @@
+---
+title: Direct Preference Optimization
+description: DPO alignment training and configuration
+---
+
+## run_dpo
+
+```python
+from modern_llm.training.train_dpo import run_dpo
+```
+
+Run Direct Preference Optimization (DPO) training on a supervised fine-tuned model using pairwise preference data. Implements the DPO algorithm from Rafailov et al. (2023).
+
+### Parameters
+
+<ParamField path="sft_checkpoint" type="Path" required>
+  Path to SFT checkpoint containing the supervised fine-tuned model state.
+</ParamField>
+
+<ParamField path="train_config" type="TrainingConfig" required>
+  Training configuration with hyperparameters and optimization settings.
+</ParamField>
+
+<ParamField path="dpo_config" type="DPOConfig" required>
+  DPO-specific configuration including beta temperature parameter.
+</ParamField>
+
+<ParamField path="preference_config" type="PreferenceDatasetConfig" required>
+  Configuration for the preference dataset with chosen/rejected pairs.
+</ParamField>
+
+<ParamField path="tokenizer_name" type="str" default="gpt2">
+  HuggingFace tokenizer identifier matching the model's tokenizer.
+</ParamField>
+
+### Returns
+
+<ResponseField name="checkpoint_path" type="Path">
+  Path to the final DPO-aligned checkpoint.
+</ResponseField>
+
+### Usage
+
+```python
+from pathlib import Path
+from modern_llm.config import TrainingConfig
+from modern_llm.data.preference_datasets import PreferenceDatasetConfig
+from modern_llm.training.train_dpo import run_dpo, DPOConfig
+
+# Point to SFT checkpoint
+sft_ckpt = Path("experiments/sft/sft_final.pt")
+
+# Configure DPO training
+train_config = TrainingConfig(
+    run_name="dpo-hh",
+    dataset_name="Anthropic/hh-rlhf",
+    tokenizer_name="gpt2",
+    output_dir=Path("experiments/dpo"),
+    batch_size=16,
+    micro_batch_size=1,
+    gradient_accumulation_steps=16,
+    learning_rate=5e-6,
+    max_steps=2000,
+    warmup_steps=50,
+    weight_decay=0.01,
+    save_every=500,
+    log_every=25,
+    mixed_precision="bf16",
+)
+
+# DPO hyperparameters
+dpo_config = DPOConfig(
+    beta=0.1,              # Temperature parameter
+    max_length=512,        # Max tokens per response
+    label_smoothing=0.0,
+)
+
+# Preference dataset
+preference_config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+)
+
+# Run DPO
+dpo_checkpoint = run_dpo(
+    sft_checkpoint=sft_ckpt,
+    train_config=train_config,
+    dpo_config=dpo_config,
+    preference_config=preference_config,
+)
+
+print(f"DPO training complete: {dpo_checkpoint}")
+```
+
+---
+
+## DPOConfig
+
+```python
+from modern_llm.training.train_dpo import DPOConfig
+```
+
+Configuration class for DPO-specific hyperparameters.
+
+### Parameters
+
+<ParamField path="beta" type="float" default="0.1">
+  Temperature parameter controlling the strength of the preference optimization. Higher values make the model more conservative, lower values make it more aggressive in following preferences.
+  
+  Typical range: 0.05 to 0.5
+</ParamField>
+
+<ParamField path="max_length" type="int" default="512">
+  Maximum number of tokens per response in preference pairs. Sequences longer than this are truncated.
+</ParamField>
+
+<ParamField path="label_smoothing" type="float" default="0.0">
+  Label smoothing factor for the DPO loss. Typically left at 0.0.
+</ParamField>
+
+### Usage
+
+```python
+from modern_llm.training.train_dpo import DPOConfig
+
+# Default configuration
+dpo_config = DPOConfig()
+
+# Custom beta for stronger preference signal
+dpo_config = DPOConfig(
+    beta=0.05,
+    max_length=1024,
+)
+
+# Conservative alignment
+dpo_config = DPOConfig(
+    beta=0.5,  # Higher beta = more conservative
+    max_length=512,
+)
+```
+
+### Beta Parameter Selection
+
+The beta parameter controls the tradeoff between following preferences and maintaining the SFT model's behavior:
+
+**Low Beta (0.05-0.1)**
+- Stronger preference optimization
+- Model changes more to match preferences
+- Risk of overfitting to preference data
+
+**Medium Beta (0.1-0.2)**
+- Balanced approach (recommended starting point)
+- Good preference following with stability
+
+**High Beta (0.3-0.5)**
+- Conservative optimization
+- Stays closer to SFT model
+- Useful when preference data is noisy
+
+```python
+# Aggressive alignment on high-quality preferences
+dpo_config = DPOConfig(beta=0.05)
+
+# Conservative alignment on noisy preferences
+dpo_config = DPOConfig(beta=0.3)
+```
+
+---
+
+## Preference Datasets
+
+DPO requires datasets with chosen/rejected response pairs:
+
+### Anthropic HH-RLHF
+
+Human preference data for helpfulness and harmlessness:
+
+```python
+preference_config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+)
+```
+
+### Stanford Human Preferences
+
+```python
+preference_config = PreferenceDatasetConfig(
+    dataset_name="stanfordnlp/SHP",
+    split="train",
+)
+```
+
+### Custom Preference Data
+
+For custom datasets, ensure they have the required format:
+
+```python
+# Expected format:
+{
+    "prompt": "User question or instruction",
+    "chosen": "Preferred response",
+    "rejected": "Dispreferred response"
+}
+```
+
+---
+
+## Training Hyperparameters
+
+### Learning Rate
+
+DPO uses very low learning rates to avoid destabilizing the SFT model:
+
+```python
+train_config = TrainingConfig(
+    learning_rate=5e-6,  # 100x lower than SFT
+    warmup_steps=50,
+    max_steps=2000,
+)
+```
+
+### Batch Size
+
+Preference pairs require more memory. Use small micro batches:
+
+```python
+train_config = TrainingConfig(
+    batch_size=16,
+    micro_batch_size=1,  # Often 1 due to memory
+    gradient_accumulation_steps=16,
+)
+```
+
+### Training Duration
+
+DPO converges quickly, typically 1000-5000 steps:
+
+```python
+train_config = TrainingConfig(
+    max_steps=2000,      # 2K steps typical
+    eval_every=200,
+    save_every=500,
+)
+```
+
+---
+
+## Pipeline Integration
+
+DPO is the third stage after pretraining and SFT:
+
+```python
+from modern_llm.training.train_lm import run_training
+from modern_llm.training.train_sft import run_sft
+from modern_llm.training.train_dpo import run_dpo, DPOConfig
+
+# Stage 1: Pretrain
+pretrain_ckpt = run_training(
+    model_config=model_config,
+    train_config=pretrain_config,
+)
+
+# Stage 2: SFT
+sft_ckpt = run_sft(
+    pretrain_checkpoint=pretrain_ckpt,
+    train_config=sft_config,
+    dataset_config=instruction_config,
+)
+
+# Stage 3: DPO
+dpo_ckpt = run_dpo(
+    sft_checkpoint=sft_ckpt,
+    train_config=dpo_config,
+    dpo_config=DPOConfig(beta=0.1),
+    preference_config=preference_config,
+)
+```
+
+---
+
+## Monitoring Training
+
+DPO training logs include:
+
+- **Loss**: DPO objective value
+- **Accuracy**: Percentage of times model prefers chosen over rejected
+- **Learning rate**: Current optimizer learning rate
+
+```python
+# Training logs
+step=100 loss=0.4523 accuracy=72.50% lr=5.000e-06
+step=200 loss=0.3891 accuracy=78.25% lr=5.000e-06
+```
+
+Accuracy > 50% indicates the model is learning to prefer chosen responses. Target accuracy is typically 70-85%.

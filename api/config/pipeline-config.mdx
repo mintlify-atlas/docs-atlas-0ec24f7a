@@ -1,0 +1,487 @@
+---
+title: Pipeline configuration
+description: Configure end-to-end training pipelines with PipelineConfig
+---
+
+## PipelineConfig
+
+Unified configuration for end-to-end training pipelines: pretrain → SFT → DPO → verifier. Combines model, training, hardware, and data configs into a single JSON-serializable structure for orchestration.
+
+Each stage has its own training config, but they share the same model architecture and hardware settings.
+
+### Model architecture parameters
+
+<ParamField path="vocab_size" type="int" default="50257">
+  Size of the vocabulary.
+</ParamField>
+
+<ParamField path="d_model" type="int" default="768">
+  Hidden dimension of the model.
+</ParamField>
+
+<ParamField path="n_layers" type="int" default="12">
+  Number of transformer layers.
+</ParamField>
+
+<ParamField path="n_heads" type="int" default="12">
+  Number of attention heads.
+</ParamField>
+
+<ParamField path="ffn_hidden_size" type="int" default="3072">
+  Hidden size of the feedforward layer.
+</ParamField>
+
+<ParamField path="max_seq_len" type="int" default="1024">
+  Maximum sequence length.
+</ParamField>
+
+<ParamField path="dropout" type="float" default="0.1">
+  Dropout probability.
+</ParamField>
+
+<ParamField path="use_rope" type="bool" default="True">
+  Whether to use Rotary Position Embeddings.
+</ParamField>
+
+<ParamField path="use_attention_sinks" type="bool" default="True">
+  Whether to use attention sinks.
+</ParamField>
+
+<ParamField path="num_attention_sinks" type="int" default="4">
+  Number of attention sink tokens.
+</ParamField>
+
+<ParamField path="use_swiglu" type="bool" default="True">
+  Whether to use SwiGLU activation.
+</ParamField>
+
+<ParamField path="tie_embeddings" type="bool" default="True">
+  Whether to share input/output embeddings.
+</ParamField>
+
+<ParamField path="use_gqa" type="bool" default="False">
+  Whether to use Grouped Query Attention.
+</ParamField>
+
+<ParamField path="gqa_groups" type="Optional[int]" default="None">
+  Number of groups for GQA.
+</ParamField>
+
+<ParamField path="use_moe" type="bool" default="False">
+  Whether to use Mixture-of-Experts.
+</ParamField>
+
+### Hardware configuration
+
+<ParamField path="hardware_preset" type="str" default="auto">
+  Hardware preset: "auto", "local", "rtx3060", "a100", or "h100".
+</ParamField>
+
+### Data configuration
+
+<ParamField path="data_preset" type="str" default="small">
+  Data scale preset: "small", "medium", "large", or "xl".
+</ParamField>
+
+<ParamField path="pretrain_datasets" type="Optional[List[str]]" default="None">
+  List of dataset names for pretraining. If None, uses default from data preset.
+</ParamField>
+
+### Pretraining parameters
+
+<ParamField path="pretrain_max_steps" type="int" default="20000">
+  Maximum training steps for pretraining.
+</ParamField>
+
+<ParamField path="pretrain_lr" type="float" default="3e-4">
+  Learning rate for pretraining.
+</ParamField>
+
+<ParamField path="pretrain_batch_size" type="int" default="64">
+  Global batch size for pretraining.
+</ParamField>
+
+<ParamField path="pretrain_micro_batch_size" type="int" default="2">
+  Micro batch size for pretraining.
+</ParamField>
+
+<ParamField path="pretrain_warmup_steps" type="int" default="500">
+  Warmup steps for pretraining.
+</ParamField>
+
+### SFT parameters
+
+<ParamField path="sft_max_steps" type="int" default="5000">
+  Maximum training steps for supervised fine-tuning.
+</ParamField>
+
+<ParamField path="sft_lr" type="float" default="1e-5">
+  Learning rate for SFT.
+</ParamField>
+
+<ParamField path="sft_batch_size" type="int" default="32">
+  Global batch size for SFT.
+</ParamField>
+
+<ParamField path="sft_micro_batch_size" type="int" default="2">
+  Micro batch size for SFT.
+</ParamField>
+
+<ParamField path="sft_dataset" type="str" default="tatsu-lab/alpaca">
+  Dataset for SFT (used if sft_datasets is None).
+</ParamField>
+
+<ParamField path="sft_datasets" type="Optional[List[str]]" default="None">
+  List of multiple SFT datasets. Overrides sft_dataset if provided.
+</ParamField>
+
+### DPO parameters
+
+<ParamField path="dpo_max_steps" type="int" default="2000">
+  Maximum training steps for Direct Preference Optimization.
+</ParamField>
+
+<ParamField path="dpo_lr" type="float" default="5e-6">
+  Learning rate for DPO.
+</ParamField>
+
+<ParamField path="dpo_batch_size" type="int" default="16">
+  Global batch size for DPO.
+</ParamField>
+
+<ParamField path="dpo_micro_batch_size" type="int" default="1">
+  Micro batch size for DPO.
+</ParamField>
+
+<ParamField path="dpo_beta" type="float" default="0.1">
+  Beta parameter for DPO loss.
+</ParamField>
+
+<ParamField path="dpo_dataset" type="str" default="Anthropic/hh-rlhf">
+  Dataset for DPO.
+</ParamField>
+
+### Verifier parameters
+
+<ParamField path="verifier_max_steps" type="int" default="3000">
+  Maximum training steps for verifier.
+</ParamField>
+
+<ParamField path="verifier_lr" type="float" default="1e-4">
+  Learning rate for verifier.
+</ParamField>
+
+<ParamField path="verifier_batch_size" type="int" default="32">
+  Global batch size for verifier.
+</ParamField>
+
+<ParamField path="verifier_micro_batch_size" type="int" default="4">
+  Micro batch size for verifier.
+</ParamField>
+
+### Output and logging
+
+<ParamField path="output_dir" type="str" default="experiments/runs">
+  Base directory for all outputs.
+</ParamField>
+
+<ParamField path="run_name" type="str" default="modern-llm-pipeline">
+  Base name for the run. Stage suffixes are added automatically.
+</ParamField>
+
+<ParamField path="tokenizer_name" type="str" default="gpt2">
+  Tokenizer to use across all stages.
+</ParamField>
+
+<ParamField path="seed" type="int" default="42">
+  Random seed for reproducibility.
+</ParamField>
+
+<ParamField path="mixed_precision" type="str" default="bf16">
+  Mixed precision dtype: "bf16", "fp16", or "fp32".
+</ParamField>
+
+<ParamField path="eval_every" type="int" default="500">
+  Evaluate every N steps.
+</ParamField>
+
+<ParamField path="save_every" type="int" default="2000">
+  Save checkpoint every N steps.
+</ParamField>
+
+<ParamField path="log_every" type="int" default="100">
+  Log metrics every N steps.
+</ParamField>
+
+## Methods
+
+### get_model_config
+
+Build a `ModernLLMConfig` from pipeline settings.
+
+```python
+def get_model_config() -> ModernLLMConfig
+```
+
+### get_hardware_config
+
+Get hardware config from preset or auto-detect.
+
+```python
+def get_hardware_config() -> HardwareConfig
+```
+
+### get_data_config
+
+Get data config from preset.
+
+```python
+def get_data_config() -> DataConfig
+```
+
+### get_pretrain_config
+
+Build `TrainingConfig` for pretraining stage.
+
+```python
+def get_pretrain_config() -> TrainingConfig
+```
+
+### get_sft_config
+
+Build `TrainingConfig` for SFT stage.
+
+```python
+def get_sft_config() -> TrainingConfig
+```
+
+### get_dpo_config
+
+Build `TrainingConfig` for DPO stage.
+
+```python
+def get_dpo_config() -> TrainingConfig
+```
+
+### get_verifier_config
+
+Build `TrainingConfig` for verifier training.
+
+```python
+def get_verifier_config() -> TrainingConfig
+```
+
+### save
+
+Save config to JSON file.
+
+```python
+def save(path: Path | str) -> None
+```
+
+### load
+
+Load config from JSON file.
+
+```python
+@classmethod
+def load(cls, path: Path | str) -> PipelineConfig
+```
+
+### to_dict
+
+Serialize to dictionary.
+
+```python
+def to_dict() -> dict[str, Any]
+```
+
+### from_dict
+
+Create config from dictionary.
+
+```python
+@classmethod
+def from_dict(cls, data: dict[str, Any]) -> PipelineConfig
+```
+
+## Preset configurations
+
+### local_smoke_config
+
+Minimal config for quick smoke testing on local machine.
+
+```python
+from modern_llm.config import local_smoke_config
+
+config = local_smoke_config()
+# d_model=256, n_layers=4, 100 pretrain steps
+```
+
+**Configuration:**
+- d_model: 256
+- n_layers: 4
+- n_heads: 4
+- ffn_hidden_size: 512
+- max_seq_len: 256
+- hardware_preset: "local"
+- data_preset: "small"
+- pretrain_max_steps: 100
+- sft_max_steps: 50
+- dpo_max_steps: 50
+- verifier_max_steps: 50
+
+### local_full_config
+
+Full config for RTX 3060 training.
+
+```python
+from modern_llm.config import local_full_config
+
+config = local_full_config()
+# GPT-2 small architecture, 20K steps
+```
+
+**Configuration:**
+- d_model: 768
+- n_layers: 12
+- n_heads: 12
+- ffn_hidden_size: 3072
+- max_seq_len: 1024
+- hardware_preset: "local"
+- data_preset: "medium"
+- pretrain_max_steps: 20000
+- sft_max_steps: 5000
+- dpo_max_steps: 2000
+- verifier_max_steps: 3000
+
+### gpu_smoke_config
+
+Minimal config for GPU smoke testing.
+
+```python
+from modern_llm.config import gpu_smoke_config
+
+config = gpu_smoke_config()
+# Same as local_smoke but with auto hardware detection
+```
+
+**Configuration:**
+- Same as `local_smoke_config` but with `hardware_preset="auto"`
+
+### gpu_full_config
+
+Full config for high-end GPU training (A100/H100).
+
+```python
+from modern_llm.config import gpu_full_config
+
+config = gpu_full_config()
+# Optimized for quality with diverse datasets
+# Estimated time on H100: ~42 hours
+```
+
+**Configuration:**
+- d_model: 1024
+- n_layers: 12
+- n_heads: 16
+- ffn_hidden_size: 4096
+- max_seq_len: 1024
+- use_attention_sinks: False (for Flash Attention compatibility)
+- hardware_preset: "auto"
+- data_preset: "large"
+- pretrain_datasets: ["wikitext-103-raw-v1", "openwebtext", "wikipedia", "roneneldan/TinyStories:100000"]
+- pretrain_max_steps: 80000
+- pretrain_batch_size: 128
+- pretrain_micro_batch_size: 32
+- sft_datasets: ["tatsu-lab/alpaca", "databricks/databricks-dolly-15k", "Open-Orca/OpenOrca:50000"]
+- sft_max_steps: 10000
+- dpo_max_steps: 3000
+- verifier_max_steps: 3000
+
+### get_pipeline_preset
+
+Get a pipeline preset by name.
+
+```python
+def get_pipeline_preset(name: str) -> PipelineConfig
+```
+
+**Parameters:**
+- `name`: One of "local-smoke", "local", "gpu-smoke", or "gpu"
+
+**Example:**
+
+```python
+from modern_llm.config import get_pipeline_preset
+
+# Get preset by name
+config = get_pipeline_preset("gpu")
+
+# Customize it
+config.pretrain_max_steps = 100000
+config.run_name = "my-custom-run"
+
+# Save for later
+config.save("configs/my_config.json")
+```
+
+## Complete example
+
+```python
+from modern_llm.config import PipelineConfig, get_pipeline_preset
+
+# Create custom pipeline config
+config = PipelineConfig(
+    # Model architecture
+    d_model=1024,
+    n_layers=16,
+    n_heads=16,
+    ffn_hidden_size=4096,
+    max_seq_len=2048,
+    use_gqa=True,
+    gqa_groups=4,
+    
+    # Hardware and data
+    hardware_preset="a100",
+    data_preset="large",
+    
+    # Pretraining
+    pretrain_max_steps=50000,
+    pretrain_lr=3e-4,
+    pretrain_batch_size=128,
+    pretrain_datasets=[
+        "wikitext-103-raw-v1",
+        "openwebtext",
+    ],
+    
+    # SFT with multiple datasets
+    sft_max_steps=8000,
+    sft_lr=1e-5,
+    sft_datasets=[
+        "tatsu-lab/alpaca",
+        "databricks/databricks-dolly-15k",
+    ],
+    
+    # Output
+    output_dir="experiments/my-run",
+    run_name="gqa-1b",
+)
+
+# Get stage-specific configs
+model_cfg = config.get_model_config()
+hardware_cfg = config.get_hardware_config()
+pretrain_cfg = config.get_pretrain_config()
+sft_cfg = config.get_sft_config()
+dpo_cfg = config.get_dpo_config()
+verifier_cfg = config.get_verifier_config()
+
+# Save and load
+config.save("configs/gqa-1b.json")
+loaded = PipelineConfig.load("configs/gqa-1b.json")
+
+# Or use a preset as starting point
+preset = get_pipeline_preset("gpu")
+preset.pretrain_max_steps = 100000
+preset.run_name = "extended-pretrain"
+```

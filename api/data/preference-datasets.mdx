@@ -1,0 +1,275 @@
+---
+title: Preference datasets
+description: Load preference pair datasets for DPO and alignment training
+---
+
+The `preference_datasets` module provides utilities for loading pairwise preference datasets used in alignment procedures like Direct Preference Optimization (DPO), including Anthropic HH-RLHF.
+
+## load_preference_dataset
+
+Load a preference dataset that yields prompt, chosen, and rejected response triples.
+
+```python
+from modern_llm.data.preference_datasets import (
+    load_preference_dataset,
+    PreferenceDatasetConfig,
+)
+
+config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+)
+
+dataset = load_preference_dataset(config)
+
+# Each example contains:
+for example in dataset:
+    prompt = example["prompt"]
+    chosen = example["chosen"]
+    rejected = example["rejected"]
+    break
+```
+
+<ParamField path="config" type="PreferenceDatasetConfig" required>
+  Configuration object specifying dataset parameters and field mappings
+</ParamField>
+
+<ResponseField name="dataset" type="Dataset">
+  Hugging Face Dataset ready for DPO batching with `prompt`, `chosen`, and `rejected` fields for each example
+</ResponseField>
+
+### Dataset format
+
+The returned dataset contains three fields per example:
+- `prompt`: The instruction or conversation context
+- `chosen`: The preferred response
+- `rejected`: The dispreferred response
+
+### Anthropic HH-RLHF format
+
+For datasets containing "Anthropic" or "hh-rlhf" in the name, the function automatically parses the conversation format:
+
+```
+Human: <first question>
+
+Assistant: <first response>
+
+Human: <follow-up question>
+
+Assistant: <final response>
+```
+
+The prompt includes everything up to the last Assistant turn, and the response is the last Assistant message.
+
+### Complexity
+
+O(num_examples) to scan column names and instantiate the dataset.
+
+## PreferenceDatasetConfig
+
+Configuration dataclass for pairwise preference datasets.
+
+```python
+from modern_llm.data.preference_datasets import PreferenceDatasetConfig
+
+config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    dataset_config_name=None,
+    split="train",
+    chosen_field="chosen",
+    rejected_field="rejected",
+    prompt_field=None,  # Auto-extracted for HH-RLHF
+)
+```
+
+<ParamField path="dataset_name" type="str" required>
+  Hugging Face dataset name (e.g., "Anthropic/hh-rlhf")
+</ParamField>
+
+<ParamField path="dataset_config_name" type="Optional[str]" default="None">
+  Dataset configuration name if the dataset has multiple configurations
+</ParamField>
+
+<ParamField path="split" type="str" default="train">
+  Dataset split to load ("train", "test", etc.)
+</ParamField>
+
+<ParamField path="chosen_field" type="str" default="chosen">
+  Name of the column containing preferred responses
+</ParamField>
+
+<ParamField path="rejected_field" type="str" default="rejected">
+  Name of the column containing dispreferred responses
+</ParamField>
+
+<ParamField path="prompt_field" type="Optional[str]" default="None">
+  Name of the column containing prompts. If None, prompts are extracted from response fields (suitable for HH-RLHF format).
+</ParamField>
+
+### Validation
+
+The config validates on initialization:
+- `dataset_name` must be non-empty
+- `chosen_field` and `rejected_field` must be different
+
+## Examples
+
+### Load Anthropic HH-RLHF dataset
+
+```python
+from modern_llm.data.preference_datasets import (
+    load_preference_dataset,
+    PreferenceDatasetConfig,
+)
+
+# Load HH-RLHF with automatic prompt extraction
+config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+    prompt_field=None,  # Will auto-extract from conversations
+)
+
+train_dataset = load_preference_dataset(config)
+
+print(f"Loaded {len(train_dataset)} preference pairs")
+
+# Inspect an example
+example = train_dataset[0]
+print(f"Prompt: {example['prompt'][:100]}...")
+print(f"Chosen: {example['chosen'][:100]}...")
+print(f"Rejected: {example['rejected'][:100]}...")
+```
+
+### Load dataset with explicit prompt field
+
+```python
+# For datasets with separate prompt/chosen/rejected columns
+config = PreferenceDatasetConfig(
+    dataset_name="your-username/preference-dataset",
+    prompt_field="prompt",
+    chosen_field="chosen",
+    rejected_field="rejected",
+    split="train",
+)
+
+dataset = load_preference_dataset(config)
+```
+
+### Load with custom field names
+
+```python
+# Dataset with different column names
+config = PreferenceDatasetConfig(
+    dataset_name="custom/preference-data",
+    chosen_field="preferred_response",
+    rejected_field="dispreferred_response",
+    prompt_field="instruction",
+)
+
+dataset = load_preference_dataset(config)
+```
+
+### Use with DPO training
+
+```python
+from modern_llm.data.preference_datasets import (
+    load_preference_dataset,
+    PreferenceDatasetConfig,
+)
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+
+# Load preference data
+config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+)
+
+dataset = load_preference_dataset(config)
+
+# Tokenize for DPO
+def tokenize_preference_pair(example):
+    """Tokenize prompt, chosen, and rejected responses."""
+    prompt_tokens = tokenizer(
+        example["prompt"],
+        truncation=True,
+        max_length=512,
+    )
+    
+    chosen_tokens = tokenizer(
+        example["chosen"],
+        truncation=True,
+        max_length=512,
+    )
+    
+    rejected_tokens = tokenizer(
+        example["rejected"],
+        truncation=True,
+        max_length=512,
+    )
+    
+    return {
+        "prompt_input_ids": prompt_tokens["input_ids"],
+        "chosen_input_ids": chosen_tokens["input_ids"],
+        "rejected_input_ids": rejected_tokens["input_ids"],
+    }
+
+tokenized_dataset = dataset.map(
+    tokenize_preference_pair,
+    remove_columns=dataset.column_names,
+)
+```
+
+### Load test split for evaluation
+
+```python
+# Load test set for DPO evaluation
+test_config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="test",
+)
+
+test_dataset = load_preference_dataset(test_config)
+
+print(f"Test set size: {len(test_dataset)}")
+```
+
+### Inspect conversation structure
+
+```python
+config = PreferenceDatasetConfig(
+    dataset_name="Anthropic/hh-rlhf",
+    split="train",
+)
+
+dataset = load_preference_dataset(config)
+
+# Look at first example
+example = dataset[0]
+
+print("Prompt (conversation context):")
+print(example["prompt"])
+print("\nChosen response:")
+print(example["chosen"])
+print("\nRejected response:")
+print(example["rejected"])
+```
+
+### Handle datasets without explicit prompts
+
+```python
+# For datasets where chosen/rejected contain full conversations
+config = PreferenceDatasetConfig(
+    dataset_name="your-dataset-name",
+    chosen_field="chosen",
+    rejected_field="rejected",
+    prompt_field=None,  # Will create empty prompts if not HH-RLHF format
+)
+
+dataset = load_preference_dataset(config)
+
+# Check if prompts were extracted
+if dataset[0]["prompt"] == "":
+    print("No prompts available, using full conversations")
+```

@@ -1,0 +1,389 @@
+---
+title: "RMSNorm"
+description: "Root Mean Square Layer Normalization for efficient activation normalization without mean centering"
+---
+
+## Overview
+
+Root Mean Square Layer Normalization (RMSNorm) is a simplified alternative to LayerNorm that normalizes activations using only the root mean square statistic, eliminating the mean centering and re-centering operations found in standard LayerNorm.
+
+<Note>
+**Paper**: Zhang & Sennrich (2019) - [Root Mean Square Layer Normalization](https://arxiv.org/abs/1910.07467)
+
+RMSNorm achieves comparable performance to LayerNorm while reducing computation by 7-64% depending on hardware and batch size.
+</Note>
+
+## Mathematical formulation
+
+### RMSNorm equation
+
+Given an input vector **x** ∈ ℝ^d, RMSNorm computes:
+
+```
+y = x * γ / sqrt(mean(x²) + ε)
+```
+
+Where:
+- **γ** (gamma) is a learned weight vector of dimension `d`
+- **ε** (epsilon) is a small constant for numerical stability (typically 1e-5)
+- `mean(x²)` is computed over the last dimension (hidden dimension)
+
+### Comparison to LayerNorm
+
+<Tabs>
+  <Tab title="LayerNorm">
+    Standard LayerNorm (Ba et al., 2016) computes:
+
+    ```
+    y = γ * (x - μ) / sqrt(σ² + ε) + β
+    ```
+
+    Where:
+    - μ = mean(x)
+    - σ² = variance(x) = mean((x - μ)²)
+    - γ, β are learned scale and shift parameters
+
+    **Operations**:
+    1. Compute mean μ
+    2. Center: x - μ
+    3. Compute variance σ²
+    4. Normalize: (x - μ) / sqrt(σ² + ε)
+    5. Scale and shift: γ * normalized + β
+  </Tab>
+  
+  <Tab title="RMSNorm">
+    RMSNorm simplifies to:
+
+    ```
+    y = γ * x / sqrt(mean(x²) + ε)
+    ```
+
+    **Operations**:
+    1. Compute mean of squares
+    2. Normalize by RMS
+    3. Scale by γ
+
+    **Removed operations**:
+    - Mean computation (μ)
+    - Mean centering (x - μ)
+    - Shift parameter (β)
+  </Tab>
+</Tabs>
+
+<Info>
+The key insight: For normalized activations, the mean-centering step has minimal impact on gradient flow and training dynamics, but costs significant computation.
+</Info>
+
+## Implementation
+
+The RMSNorm implementation in Modern LLM follows the paper exactly:
+
+<Tabs>
+  <Tab title="Core implementation">
+    ```python layers.py:19-56
+    class RMSNorm(nn.Module):
+        """Root Mean Square LayerNorm (Zhang & Sennrich, 2019).
+
+        Math:
+            y = x * γ / sqrt(mean(x^2) + ε)
+            where γ is a learned weight vector.
+
+        Pre:
+            - x has shape (..., hidden_dim).
+            - hidden_dim matches the module configuration.
+        Post:
+            - returns a tensor with identical shape and bounded second moment.
+        Complexity:
+            - O(hidden_dim) per token because we compute the RMS over the last axis.
+        Invariants:
+            - Learned weights γ remain broadcast-compatible with the last dimension.
+        """
+
+        def __init__(self, hidden_dim: int, eps: float = 1e-5) -> None:
+            super().__init__()
+            if hidden_dim <= 0:
+                raise ValueError(f"hidden_dim must be positive, received {hidden_dim}")
+            if eps <= 0:
+                raise ValueError(f"eps must be positive, received {eps}")
+            self.hidden_dim = hidden_dim
+            self.eps = eps
+            self.weight = nn.Parameter(torch.ones(hidden_dim))
+
+        def forward(self, x: Tensor) -> Tensor:
+            if x.shape[-1] != self.hidden_dim:
+                raise ValueError(
+                    f"Input last dimension must match hidden_dim ({self.hidden_dim}), got {x.shape[-1]}"
+                )
+            # mean(x^2) is the RMS statistic from Zhang & Sennrich (2019, Eq. 3)
+            variance = x.pow(2).mean(dim=-1, keepdim=True)
+            normalized = x * torch.rsqrt(variance + self.eps)
+            return normalized * self.weight
+    ```
+  </Tab>
+  
+  <Tab title="Step-by-step">
+    Breaking down the forward pass:
+
+    ```python
+    def forward(self, x: Tensor) -> Tensor:
+        # Step 1: Compute mean of squares (RMS statistic)
+        # Shape: (..., hidden_dim) -> (..., 1)
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        
+        # Step 2: Normalize by reciprocal square root
+        # Using rsqrt for efficiency: rsqrt(x) = 1/sqrt(x)
+        # Shape: (..., hidden_dim)
+        normalized = x * torch.rsqrt(variance + self.eps)
+        
+        # Step 3: Scale by learned weights
+        # γ broadcasts along last dimension
+        # Shape: (..., hidden_dim)
+        return normalized * self.weight
+    ```
+
+    **Key details**:
+    - `keepdim=True` preserves dimensions for broadcasting
+    - `torch.rsqrt` is more efficient than `1.0 / torch.sqrt`
+    - `eps` prevents division by zero for zero-valued inputs
+  </Tab>
+  
+  <Tab title="Usage in decoder">
+    RMSNorm is applied before each sub-layer (pre-normalization):
+
+    ```python transformer.py:60-76
+    class DecoderBlock(nn.Module):
+        def __init__(self, config: ModernLLMConfig) -> None:
+            super().__init__()
+            self.attn = MultiHeadAttention(attn_config)
+            self.attn_norm = RMSNorm(config.d_model, config.rmsnorm_eps)
+            self.ffn_norm = RMSNorm(config.d_model, config.rmsnorm_eps)
+            self.ffn = SwiGLU(config.d_model, hidden)
+
+        def forward(self, hidden_states: Tensor) -> Tensor:
+            # Pre-norm attention with residual
+            attn_input = self.attn_norm(hidden_states)
+            attn_output = self.attn(attn_input)
+            hidden_states = hidden_states + attn_output
+
+            # Pre-norm feedforward with residual
+            ffn_input = self.ffn_norm(hidden_states)
+            ffn_output = self.ffn(ffn_input)
+            hidden_states = hidden_states + ffn_output
+            return hidden_states
+    ```
+  </Tab>
+</Tabs>
+
+## Performance benefits
+
+### Computational efficiency
+
+RMSNorm reduces computation through:
+
+1. **Fewer operations**: Eliminates mean computation and centering
+2. **No shift parameter**: One less learned parameter per layer
+3. **Better parallelization**: RMS computation is more cache-friendly than variance with centering
+
+<AccordionGroup>
+  <Accordion title="Operation count comparison" icon="calculator">
+    For a vector of dimension `d`:
+
+    **LayerNorm**:
+    - Compute mean: `d` operations
+    - Center values: `d` operations
+    - Compute variance: `2d` operations (square + mean)
+    - Normalize: `2d` operations (divide + sqrt)
+    - Scale and shift: `2d` operations
+    - **Total: ~8d operations**
+
+    **RMSNorm**:
+    - Compute mean of squares: `2d` operations
+    - Normalize: `2d` operations
+    - Scale: `d` operations
+    - **Total: ~5d operations**
+
+    **Speedup**: ~1.6× fewer operations (37.5% reduction)
+  </Accordion>
+
+  <Accordion title="Memory benefits" icon="memory">
+    **Parameters saved**:
+    - LayerNorm: `2d` parameters per layer (γ and β)
+    - RMSNorm: `d` parameters per layer (γ only)
+    - **Reduction**: 50% fewer parameters for normalization layers
+
+    For a 12-layer model with d=768:
+    - LayerNorm: 24 × 2 × 768 = 36,864 parameters
+    - RMSNorm: 24 × 768 = 18,432 parameters
+    - **Saved**: 18,432 parameters
+  </Accordion>
+
+  <Accordion title="Gradient computation" icon="chart-line">
+    Backward pass is also simplified:
+    - No gradients for shift parameter β
+    - Simpler gradient chain without mean centering
+    - More stable numerics (no subtraction of similar values)
+  </Accordion>
+</AccordionGroup>
+
+### Training dynamics
+
+Despite removing the mean-centering step, RMSNorm maintains similar training dynamics to LayerNorm:
+
+<Tip>
+**Why it works**: In deep networks with residual connections and multiple normalization layers, the mean-centering operation becomes redundant. The scale normalization alone is sufficient to stabilize training.
+</Tip>
+
+## Hyperparameters
+
+### Epsilon (ε)
+
+The epsilon parameter ensures numerical stability:
+
+```python
+rmsnorm_eps = 1e-5  # Default value
+```
+
+<Tabs>
+  <Tab title="Typical values">
+    | Value | Use case |
+    |-------|----------|
+    | `1e-5` | Default, works for most models |
+    | `1e-6` | More precise normalization |
+    | `1e-8` | Maximum precision (fp32 only) |
+    | `1e-3` | Very aggressive smoothing |
+  </Tab>
+  
+  <Tab title="Choosing epsilon">
+    **Considerations**:
+    - **Too small**: Risk of numerical instability (NaN/Inf)
+    - **Too large**: Reduces normalization effectiveness
+    - **Mixed precision**: Use larger epsilon (≥1e-5) for fp16 training
+    - **Stability issues**: Increase epsilon if you see NaN losses
+
+    ```python
+    # Mixed precision training
+    config = ModernLLMConfig(
+        rmsnorm_eps=1e-5,  # Safe for fp16
+        # ...
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Empirical results
+
+From Zhang & Sennrich (2019):
+
+| Task | LayerNorm | RMSNorm | Speedup |
+|------|-----------|---------|----------|
+| Machine Translation (WMT14 En-De) | 27.3 BLEU | 27.4 BLEU | 7-64% faster |
+| Language Modeling (WikiText-103) | 24.2 PPL | 24.1 PPL | 7-64% faster |
+| Image Classification (CIFAR-10) | 95.1% | 95.0% | 7-64% faster |
+
+<Info>
+The speedup varies by hardware:
+- **GPUs**: 7-30% faster (memory bandwidth bound)
+- **CPUs**: 30-64% faster (compute bound)
+- **TPUs**: 10-40% faster (depending on batch size)
+</Info>
+
+## Adoption in modern LLMs
+
+RMSNorm has been adopted by many recent large language models:
+
+- **LLaMA** (Touvron et al., 2023): Uses RMSNorm exclusively
+- **PaLM** (Chowdhery et al., 2022): RMSNorm + SwiGLU combination
+- **GPT-J** (Wang & Komatsuzaki, 2021): Optional RMSNorm support
+- **Chinchilla** (Hoffmann et al., 2022): RMSNorm for efficiency
+
+<Note>
+The consensus in modern LLM research is that RMSNorm provides the best trade-off between computational efficiency and normalization effectiveness.
+</Note>
+
+## Common issues and solutions
+
+<AccordionGroup>
+  <Accordion title="NaN losses during training" icon="triangle-exclamation">
+    **Symptoms**: Loss becomes NaN after some steps
+
+    **Causes**:
+    - Epsilon too small for fp16 precision
+    - Gradient explosion in early training
+
+    **Solutions**:
+    ```python
+    # Increase epsilon
+    config.rmsnorm_eps = 1e-4  # from 1e-5
+    
+    # Use gradient clipping
+    config.max_grad_norm = 1.0
+    
+    # Reduce learning rate
+    config.learning_rate = 3e-4  # from 6e-4
+    ```
+  </Accordion>
+
+  <Accordion title="Shape mismatch errors" icon="shapes">
+    **Error**: `Input last dimension must match hidden_dim`
+
+    **Cause**: Passing tensor with wrong dimension to RMSNorm
+
+    **Solution**:
+    ```python
+    # Check tensor shapes
+    print(f"Input shape: {x.shape}")
+    print(f"Expected last dim: {rmsnorm.hidden_dim}")
+    
+    # Ensure d_model is consistent
+    assert config.d_model == 768
+    assert x.shape[-1] == config.d_model
+    ```
+  </Accordion>
+
+  <Accordion title="Weight initialization" icon="weight-hanging">
+    **Question**: Should RMSNorm weights be initialized differently?
+
+    **Answer**: No special initialization needed. Initialize to ones:
+    ```python
+    self.weight = nn.Parameter(torch.ones(hidden_dim))
+    ```
+
+    This is equivalent to starting with identity transformation, allowing the model to learn appropriate scales during training.
+  </Accordion>
+</AccordionGroup>
+
+## References
+
+<CardGroup cols={2}>
+  <Card title="Root Mean Square Layer Normalization" icon="book" href="https://arxiv.org/abs/1910.07467">
+    Zhang & Sennrich, 2019 - Original RMSNorm paper
+  </Card>
+  
+  <Card title="Layer Normalization" icon="book" href="https://arxiv.org/abs/1607.06450">
+    Ba et al., 2016 - Original LayerNorm paper
+  </Card>
+  
+  <Card title="LLaMA: Open and Efficient Foundation Language Models" icon="book" href="https://arxiv.org/abs/2302.13971">
+    Touvron et al., 2023 - Modern usage of RMSNorm
+  </Card>
+  
+  <Card title="PaLM: Scaling Language Modeling with Pathways" icon="book" href="https://arxiv.org/abs/2204.02311">
+    Chowdhery et al., 2022 - RMSNorm at scale
+  </Card>
+</CardGroup>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Architecture overview" icon="sitemap" href="/architecture/overview">
+    Learn about the full model architecture
+  </Card>
+  
+  <Card title="SwiGLU activation" icon="arrows-split-up-and-left" href="/architecture/swiglu">
+    Efficient activation function that pairs well with RMSNorm
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Set RMSNorm hyperparameters
+  </Card>
+</CardGroup>

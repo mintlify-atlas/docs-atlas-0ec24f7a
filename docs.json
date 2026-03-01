@@ -1,122 +1,137 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Modern LLM",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7C3AED",
+    "light": "#A78BFA",
+    "dark": "#5B21B6"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/AymanMahfuz27/modern_llm"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/AymanMahfuz27/modern_llm"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Architecture",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "architecture/overview",
+              "architecture/rmsnorm",
+              "architecture/rope",
+              "architecture/swiglu",
+              "architecture/attention-sinks"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Training Pipeline",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "pipeline/overview",
+              "pipeline/pretraining",
+              "pipeline/sft",
+              "pipeline/dpo",
+              "pipeline/verifier"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Guides",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "guides/configuration",
+              "guides/datasets",
+              "guides/checkpoints",
+              "guides/evaluation"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Models",
             "pages": [
-              "api-reference/introduction"
+              "api/models/transformer",
+              "api/models/attention",
+              "api/models/layers",
+              "api/models/verifier",
+              "api/models/moe"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Configuration",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/config/model-config",
+              "api/config/train-config",
+              "api/config/pipeline-config",
+              "api/config/hardware-config"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
+              "api/training/trainer",
+              "api/training/train-lm",
+              "api/training/train-sft",
+              "api/training/train-dpo",
+              "api/training/train-verifier"
+            ]
+          },
+          {
+            "group": "Data",
+            "pages": [
+              "api/data/lm-datasets",
+              "api/data/instruction-datasets",
+              "api/data/preference-datasets",
+              "api/data/task-datasets"
+            ]
+          },
+          {
+            "group": "Evaluation",
+            "pages": [
+              "api/evaluation/metrics",
+              "api/evaluation/pipeline-eval"
+            ]
+          },
+          {
+            "group": "Alignment",
+            "pages": [
+              "api/alignment/dpo-loss",
+              "api/alignment/alignment-pipeline"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Results",
+        "groups": [
+          {
+            "group": "Benchmarks",
+            "pages": [
+              "results/perplexity",
+              "results/task-metrics",
+              "results/comparison"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

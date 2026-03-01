@@ -1,0 +1,278 @@
+---
+title: Language modeling datasets
+description: Load and tokenize datasets for causal language modeling
+---
+
+The `lm_datasets` module provides utilities for loading and preprocessing causal language modeling datasets from Hugging Face, including WikiText-2, TinyStories, OpenWebText, and Wikipedia.
+
+## load_causal_lm_dataset
+
+Load and tokenize a single dataset for causal language modeling.
+
+```python
+from modern_llm.data.lm_datasets import (
+    load_causal_lm_dataset,
+    LanguageModelingDatasetConfig,
+)
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+config = LanguageModelingDatasetConfig(
+    dataset_name="wikitext",
+    dataset_config_name="wikitext-2-raw-v1",
+    split="train",
+    max_length=1024,
+)
+
+dataset = load_causal_lm_dataset(config, tokenizer)
+```
+
+<ParamField path="config" type="LanguageModelingDatasetConfig" required>
+  Configuration object specifying dataset parameters
+</ParamField>
+
+<ParamField path="tokenizer" type="PreTrainedTokenizerBase" required>
+  Tokenizer with `pad_token_id` defined for processing text
+</ParamField>
+
+<ResponseField name="dataset" type="Dataset">
+  Tokenized dataset with `input_ids`, `attention_mask`, and `labels` fields. Labels have padding tokens masked with -100 to ignore them in loss computation.
+</ResponseField>
+
+### Returns
+
+Returns a tokenized `datasets.Dataset` with the following columns:
+- `input_ids`: Tokenized input sequences
+- `attention_mask`: Attention masks (1 for real tokens, 0 for padding)
+- `labels`: Target labels for causal LM (padding positions set to -100)
+
+The dataset is formatted for PyTorch with `set_format(type="torch")`.
+
+### Complexity
+
+O(num_examples · max_length) due to tokenization work.
+
+## load_multi_dataset
+
+Load and concatenate multiple datasets for large-scale pretraining.
+
+```python
+from modern_llm.data.lm_datasets import load_multi_dataset
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+# Load multiple datasets with different sampling limits
+dataset = load_multi_dataset(
+    dataset_names=[
+        "wikitext-2-raw-v1",
+        "roneneldan/TinyStories:100000",  # Cap TinyStories at 100k samples
+        "openwebtext:50000",              # Cap OpenWebText at 50k samples
+    ],
+    tokenizer=tokenizer,
+    split="train",
+    max_length=1024,
+    max_samples_per_dataset=10000,  # Global cap (overridden by per-dataset :N)
+)
+```
+
+<ParamField path="dataset_names" type="List[str]" required>
+  List of dataset identifiers. Can be keys from `DATASET_REGISTRY` or Hugging Face dataset paths. Supports `name:N` syntax to cap individual datasets (e.g., `"TinyStories:100000"`).
+</ParamField>
+
+<ParamField path="tokenizer" type="PreTrainedTokenizerBase" required>
+  Tokenizer to use for preprocessing
+</ParamField>
+
+<ParamField path="split" type="str" default="train">
+  Dataset split to load (e.g., "train", "validation")
+</ParamField>
+
+<ParamField path="max_length" type="int" default="1024">
+  Maximum sequence length for tokenization
+</ParamField>
+
+<ParamField path="max_samples_per_dataset" type="Optional[int]" default="None">
+  Global cap for all datasets. Per-dataset `:N` suffix takes precedence.
+</ParamField>
+
+<ResponseField name="dataset" type="Dataset">
+  Concatenated and shuffled dataset combining all successfully loaded datasets
+</ResponseField>
+
+### Dataset name syntax
+
+Dataset names support optional sample limits using the `:N` suffix:
+- `"wikitext-2-raw-v1"` - Load all samples
+- `"roneneldan/TinyStories:100000"` - Load maximum 100,000 samples
+- Per-dataset limits override the global `max_samples_per_dataset` parameter
+
+### Returns
+
+Returns a concatenated and shuffled `datasets.Dataset` with all samples from the specified datasets. The combined dataset is shuffled with seed 42 for reproducibility.
+
+## LanguageModelingDatasetConfig
+
+Configuration dataclass for causal language modeling datasets.
+
+```python
+from modern_llm.data.lm_datasets import LanguageModelingDatasetConfig
+
+config = LanguageModelingDatasetConfig(
+    dataset_name="wikitext",
+    dataset_config_name="wikitext-2-raw-v1",
+    split="train",
+    text_field="text",
+    max_length=1024,
+    num_proc=4,
+    streaming=False,
+)
+```
+
+<ParamField path="dataset_name" type="str" required>
+  Hugging Face dataset name (e.g., "wikitext", "roneneldan/TinyStories")
+</ParamField>
+
+<ParamField path="dataset_config_name" type="Optional[str]" default="None">
+  Dataset configuration name (e.g., "wikitext-2-raw-v1" for WikiText)
+</ParamField>
+
+<ParamField path="split" type="str" default="train">
+  Dataset split to load ("train", "validation", or "test")
+</ParamField>
+
+<ParamField path="text_field" type="str" default="text">
+  Name of the column containing text data
+</ParamField>
+
+<ParamField path="max_length" type="int" default="1024">
+  Maximum sequence length for tokenization. Must be positive.
+</ParamField>
+
+<ParamField path="num_proc" type="Optional[int]" default="None">
+  Number of processes for parallel tokenization. None uses single process.
+</ParamField>
+
+<ParamField path="streaming" type="bool" default="False">
+  Whether to stream the dataset. Currently not supported (raises NotImplementedError).
+</ParamField>
+
+### Validation
+
+The config validates on initialization:
+- `dataset_name` must be non-empty
+- `max_length` must be positive
+
+## DATASET_REGISTRY
+
+Pre-configured mapping of common datasets to their Hugging Face paths and configurations.
+
+```python
+from modern_llm.data.lm_datasets import DATASET_REGISTRY
+
+# Available datasets:
+print(DATASET_REGISTRY.keys())
+# dict_keys(['wikitext-2-raw-v1', 'wikitext-103-raw-v1', 
+#            'roneneldan/TinyStories', 'openwebtext', 'wikipedia'])
+
+# Each entry maps to: (hf_name, hf_config, text_field)
+hf_name, hf_config, text_field = DATASET_REGISTRY["wikitext-2-raw-v1"]
+# ('wikitext', 'wikitext-2-raw-v1', 'text')
+```
+
+### Registered datasets
+
+<ParamField path="wikitext-2-raw-v1" type="tuple">
+  WikiText-2 raw dataset: `("wikitext", "wikitext-2-raw-v1", "text")`
+</ParamField>
+
+<ParamField path="wikitext-103-raw-v1" type="tuple">
+  WikiText-103 raw dataset: `("wikitext", "wikitext-103-raw-v1", "text")`
+</ParamField>
+
+<ParamField path="roneneldan/TinyStories" type="tuple">
+  TinyStories dataset: `("roneneldan/TinyStories", None, "text")`
+</ParamField>
+
+<ParamField path="openwebtext" type="tuple">
+  OpenWebText dataset: `("Skylion007/openwebtext", None, "text")`
+</ParamField>
+
+<ParamField path="wikipedia" type="tuple">
+  Wikipedia English dump: `("wikimedia/wikipedia", "20231101.en", "text")`
+</ParamField>
+
+## Examples
+
+### Load WikiText-2 for pretraining
+
+```python
+from modern_llm.data.lm_datasets import (
+    load_causal_lm_dataset,
+    LanguageModelingDatasetConfig,
+)
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+tokenizer.pad_token = tokenizer.eos_token
+
+config = LanguageModelingDatasetConfig(
+    dataset_name="wikitext",
+    dataset_config_name="wikitext-2-raw-v1",
+    split="train",
+    max_length=512,
+    num_proc=4,
+)
+
+train_dataset = load_causal_lm_dataset(config, tokenizer)
+print(f"Loaded {len(train_dataset)} training examples")
+```
+
+### Load TinyStories with custom parameters
+
+```python
+config = LanguageModelingDatasetConfig(
+    dataset_name="roneneldan/TinyStories",
+    split="train",
+    text_field="text",
+    max_length=256,  # Shorter sequences for smaller model
+)
+
+dataset = load_causal_lm_dataset(config, tokenizer)
+```
+
+### Mix multiple datasets for pretraining
+
+```python
+from modern_llm.data.lm_datasets import load_multi_dataset
+
+# Combine WikiText, TinyStories, and OpenWebText
+dataset = load_multi_dataset(
+    dataset_names=[
+        "wikitext-2-raw-v1",           # All samples
+        "roneneldan/TinyStories:50000", # 50k samples
+        "openwebtext:25000",            # 25k samples
+    ],
+    tokenizer=tokenizer,
+    split="train",
+    max_length=1024,
+)
+
+print(f"Combined dataset size: {len(dataset)}")
+```
+
+### Load custom Hugging Face dataset
+
+```python
+# Load a dataset not in DATASET_REGISTRY
+config = LanguageModelingDatasetConfig(
+    dataset_name="your-username/your-dataset",
+    dataset_config_name=None,
+    split="train",
+    text_field="content",  # Custom field name
+    max_length=1024,
+)
+
+dataset = load_causal_lm_dataset(config, tokenizer)
+```

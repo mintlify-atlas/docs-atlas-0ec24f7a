@@ -1,80 +1,328 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get up and running with Modern LLM in 5 minutes
 ---
 
-## Get started in three steps
+Get Modern LLM running in minutes with our smoke test, or dive straight into using pre-trained checkpoints for evaluation and text generation.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, ensure you have:
+
+- Python 3.9 or higher
+- Git installed
+- (Optional) CUDA-capable GPU for faster training
+
+## 5-minute smoke test
+
+Run a quick smoke test to verify your installation and see the training pipeline in action:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/AymanMahfuz27/modern_llm.git
+    cd modern_llm
+    ```
+  </Step>
+
+  <Step title="Set up virtual environment">
+    <CodeGroup>
+      ```bash Linux/macOS
+      python -m venv .venv
+      source .venv/bin/activate
+      ```
+
+      ```bash Windows
+      python -m venv .venv
+      .venv\Scripts\activate
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    pip install -r requirements.txt
+    ```
+  </Step>
+
+  <Step title="Verify installation">
+    ```bash
+    python -c "from modern_llm.models import ModernDecoderLM; print('✓ Installation verified')"
+    ```
+
+    You should see: `✓ Installation verified`
+  </Step>
+
+  <Step title="Run smoke test">
+    ```bash
+    python scripts/run_pipeline.py --config local-smoke --stage all
+    ```
+
+    This runs a minimal version of the full pipeline (pretrain → SFT → DPO → verifier) in ~5 minutes.
+  </Step>
+</Steps>
+
+<Tip>
+The smoke test uses tiny model and data sizes to verify everything works. For real training, use the `local` or `gpu` config presets.
+</Tip>
+
+## Using pre-trained checkpoints
+
+If you want to skip training and use our pre-trained 253M parameter model:
+
+### Verify checkpoints
+
+```bash
+python scripts/verify_checkpoints.py
+```
+
+This checks that all checkpoint files load correctly and displays model configurations.
+
+### Run evaluation
+
+Compare the model against GPT-2 on WikiText-2:
+
+```bash
+python scripts/evaluate_and_compare.py
+```
+
+**Expected results**:
+
+| Model | Parameters | Perplexity |
+|-------|------------|------------|
+| GPT-2 | 124M | 40.64 |
+| Modern LLM (pretrain) | 253M | **27.03** |
+| Modern LLM (SFT) | 253M | 34.14 |
+| Modern LLM (DPO) | 253M | 34.32 |
+
+### Generate text
+
+Try text generation with different checkpoints:
+
+<CodeGroup>
+  ```python Pretrained model
+  from pathlib import Path
+  from modern_llm.training import generate_text
+  from modern_llm.utils.checkpointing import load_checkpoint
+
+  # Load pretrained checkpoint
+  checkpoint_path = Path("checkpoints/pretrain_best.pt")
+  model, tokenizer = load_checkpoint(checkpoint_path, device="cuda")
+
+  # Generate text
+  prompt = "The future of artificial intelligence is"
+  generated = generate_text(
+      model=model,
+      tokenizer=tokenizer,
+      prompt=prompt,
+      max_new_tokens=50,
+      temperature=0.8,
+      top_k=40
+  )
+  print(generated)
+  ```
+
+  ```python SFT model
+  from pathlib import Path
+  from modern_llm.training import generate_text
+  from modern_llm.utils.checkpointing import load_checkpoint
+
+  # Load instruction-tuned checkpoint
+  checkpoint_path = Path("checkpoints/sft_final.pt")
+  model, tokenizer = load_checkpoint(checkpoint_path, device="cuda")
+
+  # Generate instruction response
+  prompt = "### Instruction: Explain how transformers work.\n### Response:"
+  generated = generate_text(
+      model=model,
+      tokenizer=tokenizer,
+      prompt=prompt,
+      max_new_tokens=100,
+      temperature=0.7,
+      top_k=50
+  )
+  print(generated)
+  ```
+
+  ```python DPO model
+  from pathlib import Path
+  from modern_llm.training import generate_text
+  from modern_llm.utils.checkpointing import load_checkpoint
+
+  # Load preference-aligned checkpoint
+  checkpoint_path = Path("checkpoints/dpo_final.pt")
+  model, tokenizer = load_checkpoint(checkpoint_path, device="cuda")
+
+  # Generate aligned response
+  prompt = "### Instruction: Write a helpful response.\n### Response:"
+  generated = generate_text(
+      model=model,
+      tokenizer=tokenizer,
+      prompt=prompt,
+      max_new_tokens=100,
+      temperature=0.7
+  )
+  print(generated)
+  ```
+</CodeGroup>
+
+### Run math benchmark
+
+Evaluate the model on GSM8K grade-school math problems with verifier reranking:
+
+```bash
+python scripts/benchmark_gsm8k.py
+```
+
+This generates multiple candidate solutions and uses the verifier to select the best one.
+
+## Training from scratch
+
+If you want to train your own model:
+
+<Tabs>
+  <Tab title="Full pipeline">
+    Run all training stages sequentially:
+
+    ```bash
+    python scripts/run_pipeline.py --config local --stage all
+    ```
+
+    This takes approximately **24 hours on an RTX 3060** and produces checkpoints for all stages.
+  </Tab>
+
+  <Tab title="Individual stages">
+    Run stages independently:
+
+    ```bash
+    # Stage 1: Pretrain (language modeling)
+    python scripts/run_pipeline.py --config local --stage pretrain
+
+    # Stage 2: SFT (instruction tuning)
+    python scripts/run_pipeline.py --config local --stage sft \
+      --checkpoint checkpoints/pretrain_best.pt
+
+    # Stage 3: DPO (preference alignment)
+    python scripts/run_pipeline.py --config local --stage dpo \
+      --checkpoint checkpoints/sft_final.pt
+
+    # Stage 4: Verifier (solution scoring)
+    python scripts/run_pipeline.py --config local --stage verifier
+    ```
+  </Tab>
+
+  <Tab title="Custom config">
+    Create a custom configuration:
+
+    ```python
+    from modern_llm.config import PipelineConfig
+
+    config = PipelineConfig(
+        run_name="my_experiment",
+        model_d_model=512,        # Smaller model
+        model_n_layers=8,
+        model_n_heads=8,
+        pretrain_max_steps=5000,  # Fewer steps
+        hardware_device="cuda",
+        hardware_batch_size=8,
+    )
+
+    # Save config
+    config.save("configs/my_experiment.json")
+    ```
+
+    Then run with your custom config:
+
+    ```bash
+    python scripts/run_pipeline.py --config configs/my_experiment.json --stage all
+    ```
+  </Tab>
+</Tabs>
+
+### Config presets
+
+Choose a preset based on your hardware:
+
+| Preset | Hardware | Duration | Model size | Training tokens |
+|--------|----------|----------|------------|-----------------|
+| `local-smoke` | Any (CPU/GPU) | ~5 min | 25M params | 200K tokens |
+| `local` | RTX 3060 12GB | ~24 hours | 253M params | 600M tokens |
+| `gpu-smoke` | A100/H100 | ~2 min | 25M params | 200K tokens |
+| `gpu` | A100 40GB | ~8 hours | 768M params | 2B tokens |
+
+<Warning>
+The `gpu` preset requires significant compute resources. Start with `local` or `local-smoke` for experimentation.
+</Warning>
+
+## Common issues
 
 <AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
+  <Accordion title="ImportError: No module named 'modern_llm'">
+    Make sure you've installed the package and activated your virtual environment:
+
+    ```bash
+    source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+    pip install -r requirements.txt
+    ```
+
+    You can also install in editable mode:
+
+    ```bash
+    pip install -e .
+    ```
   </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
+
+  <Accordion title="CUDA out of memory error">
+    Reduce the batch size in your configuration:
+
+    ```python
+    config = PipelineConfig(
+        hardware_batch_size=4,           # Reduce from default 8
+        hardware_gradient_accumulation_steps=4  # Increase to maintain effective batch size
+    )
+    ```
+
+    Or use the smoke test config which has minimal memory requirements.
+  </Accordion>
+
+  <Accordion title="Checkpoint files not found">
+    Checkpoints are saved in `checkpoints/` directory. If you haven't trained yet, you'll need to either:
+
+    1. Train your own model using the pipeline
+    2. Download pre-trained checkpoints (if available)
+
+    Check the checkpoint directory:
+
+    ```bash
+    ls -lh checkpoints/
+    ```
+  </Accordion>
+
+  <Accordion title="Slow training on CPU">
+    CPU training is significantly slower than GPU. For the smoke test:
+    - CPU: ~5-10 minutes
+    - GPU (RTX 3060): ~2-3 minutes
+
+    Consider using Google Colab or other cloud GPU providers for faster training.
   </Accordion>
 </AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Architecture" icon="sitemap" href="/architecture/overview">
+    Learn about RoPE, RMSNorm, SwiGLU, and attention sinks
+  </Card>
+  
+  <Card title="Training pipeline" icon="rotate" href="/pipeline/overview">
+    Deep dive into pretrain → SFT → DPO → verifier workflow
+  </Card>
+  
+  <Card title="Configuration" icon="sliders" href="/guides/configuration">
+    Customize model architecture and training hyperparameters
+  </Card>
+  
+  <Card title="API reference" icon="code" href="/api/models/transformer">
+    Explore the complete API documentation
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

@@ -1,0 +1,155 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "Modern LLM",
+  "projectDescription": "A from-scratch implementation of a frontier-style LLM training pipeline with modern architecture and complete alignment workflow",
+  "theme": "aspen",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#5B21B6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/rmsnorm",
+              "architecture/rope",
+              "architecture/swiglu",
+              "architecture/attention-sinks"
+            ]
+          },
+          {
+            "group": "Training Pipeline",
+            "pages": [
+              "pipeline/overview",
+              "pipeline/pretraining",
+              "pipeline/sft",
+              "pipeline/dpo",
+              "pipeline/verifier"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/configuration",
+              "guides/datasets",
+              "guides/checkpoints",
+              "guides/evaluation"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Models",
+            "pages": [
+              "api/models/transformer",
+              "api/models/attention",
+              "api/models/layers",
+              "api/models/verifier",
+              "api/models/moe"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "api/config/model-config",
+              "api/config/train-config",
+              "api/config/pipeline-config",
+              "api/config/hardware-config"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
+              "api/training/trainer",
+              "api/training/train-lm",
+              "api/training/train-sft",
+              "api/training/train-dpo",
+              "api/training/train-verifier"
+            ]
+          },
+          {
+            "group": "Data",
+            "pages": [
+              "api/data/lm-datasets",
+              "api/data/instruction-datasets",
+              "api/data/preference-datasets",
+              "api/data/task-datasets"
+            ]
+          },
+          {
+            "group": "Evaluation",
+            "pages": [
+              "api/evaluation/metrics",
+              "api/evaluation/pipeline-eval"
+            ]
+          },
+          {
+            "group": "Alignment",
+            "pages": [
+              "api/alignment/dpo-loss",
+              "api/alignment/alignment-pipeline"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Results",
+        "groups": [
+          {
+            "group": "Benchmarks",
+            "pages": [
+              "results/perplexity",
+              "results/task-metrics",
+              "results/comparison"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Modern Transformer architecture with RoPE, RMSNorm, and SwiGLU",
+    "Complete alignment pipeline (Pretrain → SFT → DPO → Verifier)",
+    "Attention sinks for long-context stability",
+    "Mixture-of-Experts (MoE) support",
+    "Comprehensive evaluation and benchmarking tools",
+    "Hardware-optimized configurations for RTX 3060, A100, H100"
+  ],
+  "publicApiSurface": [
+    "ModernDecoderLM",
+    "ModernLLMConfig",
+    "TrainingConfig",
+    "PipelineConfig",
+    "MultiHeadAttention",
+    "RMSNorm",
+    "SwiGLU",
+    "MixtureOfExperts",
+    "VerifierModel",
+    "Trainer",
+    "run_training",
+    "run_sft",
+    "run_dpo",
+    "dpo_loss",
+    "load_causal_lm_dataset",
+    "load_instruction_dataset",
+    "load_preference_dataset",
+    "compute_metrics",
+    "get_pipeline_preset",
+    "get_hardware_preset"
+  ]
+}
